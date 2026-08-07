@@ -5,3 +5,9 @@ redis==5.2.*
 psycopg2-binary==2.9.*
 sqlalchemy==2.0.*
 geoalchemy2==0.15.*
+rasterio
+rio-cogeo
+pyrosm
+geopandas
+shapely
+alembic

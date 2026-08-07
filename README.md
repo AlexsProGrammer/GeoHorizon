@@ -1,7 +1,7 @@
 
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.0.1
+Version 0.1.1
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 

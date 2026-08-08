@@ -13,6 +13,7 @@ from PIL import Image
 from pydantic import BaseModel
 from rasterio.warp import transform_bounds
 
+from app.engine.terrain_tiles import render_terrain_tile
 from app.worker import celery_app
 from app.worker.viewshed_tasks import run_area_search_task, run_viewshed_task
 
@@ -200,3 +201,23 @@ async def bounds():
             except Exception:
                 continue
     return {"cogs": cogs}
+
+
+@router.get("/terrain/{z}/{x}/{y}.png")
+async def terrain_tile(z: int, x: int, y: int):
+    """Return a Mapbox terrain-RGB PNG tile for MapLibre 3D terrain.
+
+    The tile is warped from the first available ``*_cog.tif`` in the processed
+    directory into Web-Mercator and encoded as terrain-RGB. Tiles are cached
+    on disk so repeated requests are cheap.
+    """
+    cogs = sorted(PROCESSED_DIR.glob("*_cog.tif")) if PROCESSED_DIR.is_dir() else []
+    if not cogs:
+        raise HTTPException(status_code=404, detail="No processed COG available")
+
+    cache_dir = PROCESSED_DIR / "terrain_cache"
+    png = render_terrain_tile(str(cogs[0]), x, y, z, cache_dir=str(cache_dir))
+    if png is None:
+        raise HTTPException(status_code=404, detail="Terrain tile could not be rendered")
+
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})

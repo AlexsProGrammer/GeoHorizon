@@ -7,6 +7,8 @@ import { MapboxOverlay } from '@deck.gl/mapbox'
 import { BitmapLayer, GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers'
 import { useMapStore } from '../store/useMapStore'
 import { buildConePolygon, buildPolygonFeature } from '../services/geometry'
+import Compass from './Compass'
+import HoverTooltip from './HoverTooltip'
 
 // Register the pmtiles:// protocol handler for MapLibre once.
 const protocol = new Protocol()
@@ -14,6 +16,49 @@ maplibregl.addProtocol('pmtiles', protocol.tile)
 
 // Default view centered on the imported Oberbayern / Traunreut area.
 const DEFAULT_CENTER: [number, number] = [12.65, 47.95]
+
+// Friendly labels for the layers in public/style.json (OpenMapTiles-like).
+const FEATURE_LABELS: Record<string, string> = {
+  water: 'Water',
+  landcover: 'Land cover',
+  landuse: 'Land use',
+  roads: 'Road',
+  'roads-casing': 'Road',
+  transportation: 'Road',
+  buildings: 'Building',
+  building: 'Building',
+}
+
+function featureLabel(f: { layer?: { id?: string }; properties?: Record<string, unknown> }): string | null {
+  const cls = f.properties?.class
+  if (cls) {
+    const c = String(cls)
+    if (c.includes('wood') || c.includes('forest')) return 'Forest'
+    if (c.includes('grass') || c.includes('meadow') || c.includes('grassland')) return 'Grass'
+    if (c.includes('residential')) return 'Residential'
+    if (c.includes('industrial')) return 'Industrial'
+    if (c === 'park') return 'Park'
+  }
+  const name = f.properties?.name
+  if (name) return String(name)
+  return FEATURE_LABELS[f.layer?.id ?? ''] ?? null
+}
+
+function collectHoverFeatures(
+  features: Array<{ layer?: { id?: string }; properties?: Record<string, unknown> }>,
+): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const f of features) {
+    const label = featureLabel(f)
+    if (label && !seen.has(label)) {
+      seen.add(label)
+      out.push(label)
+    }
+    if (out.length >= 4) break
+  }
+  return out
+}
 
 export default function MapView() {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -36,6 +81,7 @@ export default function MapView() {
   const setSearchPolygon = useMapStore((s) => s.setSearchPolygon)
   const addDraftVertex = useMapStore((s) => s.addDraftVertex)
   const clearDraft = useMapStore((s) => s.clearDraft)
+  const setHoverPosition = useMapStore((s) => s.setHoverPosition)
 
   // Initialize the MapLibre map and Deck.gl overlay once.
   useEffect(() => {
@@ -49,16 +95,64 @@ export default function MapView() {
     })
     mapRef.current = map
 
-    const overlay = new MapboxOverlay({ interleaved: true })
+    // Share the depth buffer with MapLibre terrain (fixes z-fighting between
+    // the overlay layers and the 3D surface) and apply transparent blending.
+    const overlay = new MapboxOverlay({
+      interleaved: true,
+      parameters: { depthTest: true, blend: true },
+    })
     overlayRef.current = overlay
     map.addControl(overlay)
 
+    // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
+    map.on('load', () => {
+      if (map.getSource('terrain-dem')) return
+      map.addSource('terrain-dem', {
+        type: 'raster-dem',
+        tiles: ['/api/viewshed/terrain/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        maxzoom: 15,
+        encoding: 'mapbox',
+      } as maplibregl.RasterDEMSourceSpecification)
+      map.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 })
+    })
+
+    // Mouse hover: capture coordinates, terrain elevation and OSM features.
+    const onMove = (e: maplibregl.MapMouseEvent) => {
+      let elevation: number | null = null
+      try {
+        const el = map.queryTerrainElevation(e.lngLat)
+        if (typeof el === 'number' && isFinite(el)) elevation = el
+      } catch {
+        elevation = null
+      }
+      const features = collectHoverFeatures(
+        map.queryRenderedFeatures(e.point) as Array<{
+          layer?: { id?: string }
+          properties?: Record<string, unknown>
+        }>,
+      )
+      setHoverPosition({
+        lng: e.lngLat.lng,
+        lat: e.lngLat.lat,
+        elevation,
+        features,
+        x: e.point.x,
+        y: e.point.y,
+      })
+    }
+    const onLeave = () => setHoverPosition(null)
+    map.on('mousemove', onMove)
+    map.on('mouseleave', onLeave)
+
     return () => {
+      map.off('mousemove', onMove)
+      map.off('mouseleave', onLeave)
       map.remove()
       mapRef.current = null
       overlayRef.current = null
     }
-  }, [])
+  }, [setHoverPosition])
 
   // Click behaviour: place the observer in point mode, add an area vertex in
   // area mode. Re-registered whenever the mode (or handler identity) changes.
@@ -202,6 +296,8 @@ export default function MapView() {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      <Compass mapRef={mapRef} />
+      <HoverTooltip />
       {searchMode === 'area' && (
         <div className="pointer-events-auto absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-zinc-300 bg-white/95 px-3 py-2 shadow-lg">
           <span className="text-xs text-zinc-600">

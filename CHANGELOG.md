@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.9] - 2026-08-08
+Added 3D terrain, z-fighting fixes, a compass and a hover tooltip:
+- **3D terrain:** New `engine/terrain_tiles.py` renders Mapbox terrain-RGB PNG tiles from the DEM COG on demand (Web-Mercator warp + RGB elevation encoding), served at `GET /api/viewshed/terrain/{z}/{x}/{y}.png` and cached to `/data/processed/terrain_cache/`. `MapView` adds a `raster-dem` source and `map.setTerrain(...)` (exaggeration 1.5) so hills and valleys render in 3D.
+- **Z-fighting fix:** The Deck.gl `MapboxOverlay` now shares the depth buffer with MapLibre terrain (`parameters: { depthTest: true, blend: true }`), preventing the overlay surfaces from fighting with the 3D relief, especially when rotating.
+- **Compass:** New `Compass.tsx` control in the top-right corner showing N/S/E/W that rotates with the map; clicking it eases the view back to north (bearing 0).
+- **Hover tooltip:** New `HoverTooltip.tsx` shows live coordinates, terrain elevation, and OSM feature labels (water, road, building, forest, etc.) as you move the mouse, using `queryTerrainElevation` / `queryRenderedFeatures`.
+
+## [0.1.8] - 2026-08-08
+Added long-range horizon ray casting with caching (the "mountain 50 km away blocks the view" case):
+- **Backend:** New `engine/horizon_profiler.py` module. `compute_horizon_profiles` samples DEM elevation along rays in the requested directions (one every ~5° within the FOV, 72 even rays for 360°) out to 100 km and caches each profile as `.npz` in `/data/processed/horizon_cache/` keyed by COG + azimuth + params.
+- **Backend:** Earth-curvature-corrected horizon test. `horizon_fraction` checks whether any terrain beyond the observer, corrected for curvature, rises above eye level (DEM elevation at the observer + observer height); a ray scores 1.0 if clear, 0.0 if blocked.
+- **Backend:** Horizon per-direction profiles are computed once relative to the search-area centroid and reused for every sampled point in an area search. When enabled, a position's final score = `local sky-visibility × horizon clear fraction`.
+- **Backend:** Single-point pipeline gains optional `horizon_enabled` / `horizon_max_km`; it returns `horizon_pass` / `horizon_score` in the task result.
+- **Backend:** New `HorizonProfile` dataclass, `ray_azimuths`, `observer_distance_along_ray`; both `ViewshedRequest` and `AreaSearchRequest` accept `horizon_enabled` / `horizon_max_km`.
+- **Tests:** New `tests/test_horizon_profiler.py` covering ray-azimuth generation, flat-vs-mountain horizon blocking, observer projection, and profile caching.
+- **Frontend:** "Horizon check (100 km)" checkbox in the sidebar, wired into both the area-search and single-point request payloads.
+
 ## [0.1.7] - 2026-08-08
 Added color-coded results and a toggleable legend for area-search positions:
 - **Frontend:** Area-search scatter results are now colored by sky-visibility score instead of a flat green — green (≥0.70), yellow (0.30–0.70), red (<0.30).

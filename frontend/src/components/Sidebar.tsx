@@ -28,6 +28,7 @@ export default function Sidebar() {
   const treeOffset = useMapStore((s) => s.treeOffset)
   const buildingOffset = useMapStore((s) => s.buildingOffset)
   const observerHeight = useMapStore((s) => s.observerHeight)
+  const horizonEnabled = useMapStore((s) => s.horizonEnabled)
   const selectedCog = useMapStore((s) => s.selectedCog)
   const availableCogs = useMapStore((s) => s.availableCogs)
   const taskId = useMapStore((s) => s.taskId)
@@ -40,6 +41,7 @@ export default function Sidebar() {
   const setTreeOffset = useMapStore((s) => s.setTreeOffset)
   const setBuildingOffset = useMapStore((s) => s.setBuildingOffset)
   const setObserverHeight = useMapStore((s) => s.setObserverHeight)
+  const setHorizonEnabled = useMapStore((s) => s.setHorizonEnabled)
   const setSearchMode = useMapStore((s) => s.setSearchMode)
   const setGridStep = useMapStore((s) => s.setGridStep)
   const setCog = useMapStore((s) => s.setCog)
@@ -80,6 +82,7 @@ export default function Sidebar() {
           observer_height: observerHeight,
           tree_height: treeOffset,
           building_height: buildingOffset,
+          horizon_enabled: horizonEnabled,
         })
         task_id = res.task_id
       } else if (observerLat != null && observerLng != null) {
@@ -93,6 +96,7 @@ export default function Sidebar() {
           observer_height: observerHeight,
           tree_height: treeOffset,
           building_height: buildingOffset,
+          horizon_enabled: horizonEnabled,
         })
         task_id = res.task_id
       } else {
@@ -234,6 +238,21 @@ export default function Sidebar() {
           onChange={(e) => setObserverHeight(Number(e.target.value))}
           className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800"
         />
+      </section>
+
+      <section className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={horizonEnabled}
+          onChange={(e) => setHorizonEnabled(e.target.checked)}
+          className="mt-0.5 h-4 w-4 accent-emerald-600"
+        />
+        <label className="text-sm text-zinc-700">
+          <span className="font-semibold">Horizon check (100 km)</span>
+          <span className="block text-xs font-normal text-zinc-500">
+            Casts long rays to verify no distant mountains block the view.
+          </span>
+        </label>
       </section>
 
       {resultGeoJSON && <Legend />}

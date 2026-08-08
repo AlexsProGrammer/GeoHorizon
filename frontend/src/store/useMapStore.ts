@@ -27,6 +27,15 @@ export interface LegendVisibility {
   red: boolean
 }
 
+export interface HoverInfo {
+  lng: number
+  lat: number
+  elevation: number | null
+  features: string[]
+  x: number
+  y: number
+}
+
 interface MapState {
   // Observer position (set by map click)
   observerLat: number | null
@@ -64,6 +73,9 @@ interface MapState {
   resultImageUrl: string | null
   resultBbox: [number, number, number, number] | null
 
+  // Mouse hover info shown in the map tooltip
+  hoverPosition: HoverInfo | null
+
   // Actions
   setObserver: (lat: number, lng: number) => void
   setRadius: (km: number) => void
@@ -85,6 +97,7 @@ interface MapState {
   setProgress: (progress: number, status: ViewshedStatus, step: string) => void
   setError: (message: string | null) => void
   setResult: (imageUrl: string, bbox: [number, number, number, number]) => void
+  setHoverPosition: (hover: HoverInfo | null) => void
   resetTask: () => void
   resetResult: () => void
   fetchAvailableCogs: () => Promise<void>
@@ -120,6 +133,8 @@ export const useMapStore = create<MapState>((set) => ({
 
   resultImageUrl: null,
   resultBbox: null,
+
+  hoverPosition: null,
 
   setObserver: (lat, lng) => set({ observerLat: lat, observerLng: lng }),
   setRadius: (radiusKm) => set({ radiusKm }),
@@ -160,6 +175,7 @@ export const useMapStore = create<MapState>((set) => ({
     }),
   resetTask: () =>
     set({ taskId: null, progress: 0, status: 'IDLE', step: '', errorMessage: null }),
+  setHoverPosition: (hoverPosition) => set({ hoverPosition }),
   resetResult: () =>
     set((state) => {
       if (state.resultImageUrl) {

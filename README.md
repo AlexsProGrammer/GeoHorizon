@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.7
+Version 0.1.9
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -15,6 +15,8 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 * **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
 * **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points.
 * **Color-Coded Results & Legend:** Area-search positions are colored green (≥70% sky visibility), yellow (30–70%), or red (<30%), with a toggleable legend in the sidebar so you can isolate just the best spots.
+* **Long-Range Horizon Check:** An optional 100 km horizon ray-cast that catches distant mountains blocking the view even when the local radius looks clear. Long rays are cached per direction and reused across all sampled points, so the check stays fast.
+* **3D Terrain & Interactions:** MapLibre 3D terrain (terrain-RGB tiles generated from the DEM on demand) so hills and valleys render realistically, a clickable compass to reset north, a mouse-hover tooltip with coordinates/elevation/OSM labels, and a shared depth buffer that prevents overlay z-fighting when rotating.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
 * **Windowed COG Reads:** Never loads full regional DEMs into RAM — only the observer's bounding box is read via `rasterio.windows.from_bounds()`.
 * **The "Kill Switch":** True background task termination. Instantly kill runaway CPU tasks via WebSockets if radius or point density parameters are set too high.
@@ -66,6 +68,8 @@ geo-horizon/
 │       │   ├── __init__.py
 │       │   ├── area_search.py    # Multi-point area search & best-position scoring
 │       │   ├── dsm_builder.py   # COG extraction & obstacle height matrix addition
+│       │   ├── horizon_profiler.py # 100km horizon ray casts (cached .npz profiles)
+│       │   ├── terrain_tiles.py  # Terrain-RGB PNG tiles for 3D terrain
 │       │   ├── cone_filter.py   # Spatial azimuth & FOV cone calculation
 │       │   ├── viewshed.py      # WhiteboxTools viewshed execution wrapper
 │       │   └── pipeline.py     # Main execution coordinator function
@@ -213,6 +217,8 @@ The full flow is orchestrated by `run_viewshed_pipeline(...)` in `pipeline.py` a
 
 The **area search** engine (`area_search.py`) builds on this flow to find the best positions inside a user-drawn polygon: it crops the DEM and builds the DSM *once* for the whole area, then runs a WhiteboxTools viewshed from every grid point and scores each by `visible cells / cells in the cone`. The scored points are returned as GeoJSON for the frontend to display.
 
+The **horizon profiler** (`horizon_profiler.py`) casts optional long-range rays (default 100 km, one every ~5° within the FOV, 72 even rays for 360°) to detect distant mountains. Terrain elevations along each ray are sampled once, Earth-curvature-corrected, and cached to `/data/processed/horizon_cache/` as `.npz` per direction — every observer in an area search reuses the same profiles. When enabled, a position's score is `local_visibility × horizon_clear_fraction`.
+
 ### `POST /api/viewshed/start`
 Dispatches a viewshed calculation as a Celery task.
 
@@ -248,7 +254,9 @@ Dispatches a multi-point area search as a background Celery task. Finds the best
   "grid_step_m": 50,
   "observer_height": 1.8,
   "tree_height": 30.0,
-  "building_height": 15.0
+  "building_height": 15.0,
+  "horizon_enabled": false,
+  "horizon_max_km": 100.0
 }
 ```
 `search_area` is a GeoJSON Polygon in WGS84 (drawn on the frontend). `grid_step_m` controls sampling density (coarser = faster).
@@ -271,7 +279,12 @@ Returns the scored result of an area search as a GeoJSON `FeatureCollection`. Ea
 ```
 
 ### `GET /api/viewshed/status/{task_id}`
-Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
+Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`, optional `horizon_pass`/`horizon_score`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
+
+### `GET /api/viewshed/terrain/{z}/{x}/{y}.png`
+Returns a Mapbox terrain-RGB PNG tile for the MapLibre 3D terrain. The tile is warped from the first available processed COG into Web-Mercator, elevation-encoded as terrain-RGB, and cached to `/data/processed/terrain_cache/`. The frontend uses this as a `raster-dem` source with `map.setTerrain(...)`.
+
+**Response headers:** `Content-Type: image/png`, `Cache-Control: public, max-age=86400`
 
 ### `GET /api/viewshed/bounds`
 Lists all processed COGs in `/data/processed/` with their spatial metadata, so the frontend knows valid calculation boundaries.
@@ -342,6 +355,8 @@ Environment variables live in `.env` (see `.env.example`):
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.9** — 3D terrain (terrain-RGB tiles + MapLibre `setTerrain`), z-fighting fix via shared depth buffer, a clickable north-resetting compass, and a mouse-hover tooltip with coordinates, elevation, and OSM feature labels.
+- **0.1.8** — Long-Range Horizon Check: an optional 100 km ray-cast detects distant mountains blocking the view. Profiles are Earth-curvature-corrected and cached per direction (`/data/processed/horizon_cache/`), then reused across all area-search points; a "Horizon check" toggle feeds into the area score (`local × horizon`).
 - **0.1.7** — Color-coded results: area-search positions are now rendered green (≥70%), yellow (30–70%), or red (<30%) and a toggleable legend in the sidebar lets you show/hide each quality class on the map.
 - **0.1.6** — Area Search (best-position finder): draw a search polygon on the map and the engine scores every sampled grid point by sky-visibility ratio using a single reused DSM. New `/api/viewshed/area-search` + `/api/viewshed/area-result/{task_id}` endpoints, an Analysis Mode toggle (Point/Area), configurable grid step, and a scored-point scatter overlay.
 - **0.1.5** — 360° Panoramic Viewshed: FOV can now be set to 360° for a full circular line-of-sight, alongside the existing directional cone mode. The engine skips the directional mask and produces a symmetric panoramic result; the map preview renders a full circle instead of a wedge.

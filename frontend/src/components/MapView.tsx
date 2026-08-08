@@ -98,14 +98,17 @@ export default function MapView() {
     // Share the depth buffer with MapLibre terrain (fixes z-fighting between
     // the overlay layers and the 3D surface) and apply transparent blending.
     const overlay = new MapboxOverlay({
-      interleaved: true,
-      parameters: { depthTest: true, blend: true },
+      interleaved: false,            // MAPLIBRE-compatible rendering path (was: true)
+      parameters: { blend: true },   // drop depthTest: Deck.gl draws in its own top layer
     })
     overlayRef.current = overlay
     map.addControl(overlay)
 
     // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
+    // DISABLED (ISOLATION TEST): re-enable after confirming the NaN cause.
+    const enableTerrain = false
     map.on('load', () => {
+      if (!enableTerrain) return
       if (map.getSource('terrain-dem')) return
       map.addSource('terrain-dem', {
         type: 'raster-dem',

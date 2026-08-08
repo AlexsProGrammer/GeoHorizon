@@ -1,0 +1,63 @@
+{
+  "version": 8,
+  "name": "HorizonVista Local",
+  "sources": {
+    "basemap": {
+      "type": "vector",
+      "url": "pmtiles://http://localhost:8000/tiles/basemap.pmtiles",
+      "attribution": "OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": { "background-color": "#f8f4f0" }
+    },
+    {
+      "id": "water",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "water",
+      "paint": { "fill-color": "#a6cee3" }
+    },
+    {
+      "id": "landcover",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landcover",
+      "paint": { "fill-color": "#cdebb3" }
+    },
+    {
+      "id": "landuse",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "landuse",
+      "paint": { "fill-color": "#e6e6de" }
+    },
+    {
+      "id": "roads",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "transportation",
+      "minzoom": 8,
+      "paint": { "line-color": "#ffffff", "line-width": 2 }
+    },
+    {
+      "id": "roads-casing",
+      "type": "line",
+      "source": "basemap",
+      "source-layer": "transportation",
+      "minzoom": 8,
+      "paint": { "line-color": "#d8c9a8", "line-width": 3 }
+    },
+    {
+      "id": "buildings",
+      "type": "fill",
+      "source": "basemap",
+      "source-layer": "building",
+      "minzoom": 14,
+      "paint": { "fill-color": "#d9d0c9" }
+    }
+  ]
+}

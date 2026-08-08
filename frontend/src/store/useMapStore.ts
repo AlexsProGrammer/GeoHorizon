@@ -39,6 +39,7 @@ interface MapState {
   treeOffset: number
   buildingOffset: number
   observerHeight: number
+  horizonEnabled: boolean
 
   // Area search state
   searchMode: SearchMode
@@ -71,6 +72,7 @@ interface MapState {
   setTreeOffset: (m: number) => void
   setBuildingOffset: (m: number) => void
   setObserverHeight: (m: number) => void
+  setHorizonEnabled: (enabled: boolean) => void
   setSearchMode: (mode: SearchMode) => void
   setSearchPolygon: (polygon: Feature<Polygon> | null) => void
   addDraftVertex: (lngLat: [number, number]) => void
@@ -98,6 +100,7 @@ export const useMapStore = create<MapState>((set) => ({
   treeOffset: 30,
   buildingOffset: 15,
   observerHeight: 1.8,
+  horizonEnabled: false,
 
   searchMode: 'point',
   searchPolygon: null,
@@ -125,6 +128,7 @@ export const useMapStore = create<MapState>((set) => ({
   setTreeOffset: (treeOffset) => set({ treeOffset }),
   setBuildingOffset: (buildingOffset) => set({ buildingOffset }),
   setObserverHeight: (observerHeight) => set({ observerHeight }),
+  setHorizonEnabled: (horizonEnabled) => set({ horizonEnabled }),
   setSearchMode: (searchMode) =>
     set({ searchMode, searchPolygon: null, draftVertices: [], resultGeoJSON: null }),
   setSearchPolygon: (searchPolygon) => set({ searchPolygon }),

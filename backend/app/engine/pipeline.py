@@ -21,6 +21,12 @@ from app.engine.dsm_builder import (
     fetch_obstacles,
     get_bounding_box,
 )
+from app.engine.horizon_profiler import (
+    compute_horizon_profiles,
+    horizon_fraction,
+    observer_distance_along_ray,
+    ray_azimuths,
+)
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
 
 __all__ = ["run_viewshed_pipeline"]
@@ -57,6 +63,9 @@ def run_viewshed_pipeline(
     observer_height: float = OBSERVER_HEIGHT_DEFAULT,
     tree_height: float = 30.0,
     building_height: float = 15.0,
+    horizon_enabled: bool = False,
+    horizon_max_km: float = 100.0,
+    horizon_cache_dir: str | None = None,
     progress_callback: Callable[[str, int, str], None] | None = None,
 ) -> dict:
     """Run the full viewshed pipeline and return results.
@@ -120,10 +129,38 @@ def run_viewshed_pipeline(
         "Applying directional mask" if effective_fov < 360.0 else "Applying panoramic mask",
     )
 
-    return {
+    result = {
         "visibility": masked,
         "transform": transform,
         "crs": crs,
         "bbox": bbox,
         "observer": (obs_x, obs_y),
     }
+
+    # Optional long-range horizon check for the requested direction(s).
+    if horizon_enabled:
+        _emit("HORIZON", 90, "Checking distant horizon")
+        rays = ray_azimuths(azimuth, fov)
+        profiles = compute_horizon_profiles(
+            cog_path,
+            (lat, lng),
+            rays,
+            max_distance_km=horizon_max_km,
+            cache_dir=horizon_cache_dir,
+        )
+        origin = profiles[rays[0]]
+        col, row = ~transform * (obs_x, obs_y)
+        row_i = min(max(int(round(row)), 0), dem_array.shape[0] - 1)
+        col_i = min(max(int(round(col)), 0), dem_array.shape[1] - 1)
+        eye_altitude = float(dem_array[row_i, col_i]) + observer_height
+        clear = 0
+        for ray_az in rays:
+            obs_dist = observer_distance_along_ray(
+                ray_az, origin.origin_x, origin.origin_y, obs_x, obs_y
+            )
+            clear += horizon_fraction(profiles[ray_az], obs_dist, eye_altitude, horizon_max_km)
+        horizon_score = clear / len(rays)
+        result["horizon_score"] = round(horizon_score, 4)
+        result["horizon_pass"] = horizon_score > 0.0
+
+    return result

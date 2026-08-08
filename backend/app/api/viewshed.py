@@ -36,6 +36,8 @@ class ViewshedRequest(BaseModel):
     tree_height: float = 30.0
     building_height: float = 15.0
     point_density: int | None = None
+    horizon_enabled: bool = False
+    horizon_max_km: float = 100.0
 
 
 class AreaSearchRequest(BaseModel):
@@ -48,6 +50,8 @@ class AreaSearchRequest(BaseModel):
     observer_height: float = 1.8
     tree_height: float = 30.0
     building_height: float = 15.0
+    horizon_enabled: bool = False
+    horizon_max_km: float = 100.0
 
 
 @router.post("/start")

@@ -22,6 +22,12 @@ from app.engine.dsm_builder import (
     crop_dem_window,
     fetch_obstacles,
 )
+from app.engine.horizon_profiler import (
+    compute_horizon_profiles,
+    horizon_fraction,
+    observer_distance_along_ray,
+    ray_azimuths,
+)
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
 
 __all__ = ["sample_grid_points", "score_viewshed", "run_area_search"]
@@ -83,6 +89,14 @@ def score_viewshed(visibility: np.ndarray, cone: np.ndarray) -> float:
     return visible / in_cone
 
 
+def _dem_elevation(dem_array: np.ndarray, transform, x: float, y: float) -> float:
+    """Sample the DEM (MSL) at a projected point (x, y)."""
+    col, row = ~transform * (x, y)
+    row_i = min(max(int(round(row)), 0), dem_array.shape[0] - 1)
+    col_i = min(max(int(round(col)), 0), dem_array.shape[1] - 1)
+    return float(dem_array[row_i, col_i])
+
+
 def run_area_search(
     db_session,
     cog_path: str,
@@ -94,6 +108,9 @@ def run_area_search(
     observer_height: float = OBSERVER_HEIGHT_DEFAULT,
     tree_height: float = 30.0,
     building_height: float = 15.0,
+    horizon_enabled: bool = False,
+    horizon_max_km: float = 100.0,
+    horizon_cache_dir: str | None = None,
     progress_callback: Callable[[str, int, str], None] | None = None,
 ) -> dict:
     """Run a multi-point area search and return scored GeoJSON.
@@ -159,6 +176,26 @@ def run_area_search(
     # For 360° the mask is a full circle (any azimuth gives the same shape).
     mask_fov = 360.0 if panoramic else fov
 
+    # Optional long-range horizon check. Profiles are computed once per
+    # direction relative to the search-area centroid and reused for every point.
+    horizon_rays: list[float] = []
+    horizon_profiles = None
+    if horizon_enabled:
+        _emit("HORIZON", 19, "Casting horizon rays")
+        centroid = search_polygon_4326.centroid  # (lng, lat)
+        horizon_rays = ray_azimuths(azimuth, fov)
+        horizon_profiles = compute_horizon_profiles(
+            cog_path,
+            (centroid.y, centroid.x),
+            horizon_rays,
+            max_distance_km=horizon_max_km,
+            cache_dir=horizon_cache_dir,
+        )
+        origin_x = horizon_profiles[horizon_rays[0]].origin_x
+        origin_y = horizon_profiles[horizon_rays[0]].origin_y
+    else:
+        origin_x = origin_y = 0.0
+
     features = []
     for idx, (x, y) in enumerate(points):
         visibility = calculate_viewshed(dsm, transform, crs, (x, y), observer_height)
@@ -166,6 +203,20 @@ def run_area_search(
             dem_array.shape, transform, x, y, azimuth, mask_fov, radius_px
         )
         score = score_viewshed(visibility, cone)
+
+        if horizon_enabled and horizon_profiles is not None:
+            eye_altitude = _dem_elevation(dem_array, transform, x, y) + observer_height
+            clear_rays = 0
+            for ray_az in horizon_rays:
+                obs_dist = observer_distance_along_ray(
+                    ray_az, origin_x, origin_y, x, y
+                )
+                clear_rays += horizon_fraction(
+                    horizon_profiles[ray_az], obs_dist, eye_altitude, horizon_max_km
+                )
+            horizon_score = clear_rays / len(horizon_rays)
+            score *= horizon_score
+
         lng, lat = to_wgs84.transform(x, y)
         features.append(
             {

@@ -21,6 +21,8 @@ export interface ViewshedRequest {
   observer_height: number
   tree_height: number
   building_height: number
+  horizon_enabled: boolean
+  horizon_max_km?: number
 }
 
 export interface AreaSearchRequest {
@@ -33,6 +35,8 @@ export interface AreaSearchRequest {
   observer_height: number
   tree_height: number
   building_height: number
+  horizon_enabled: boolean
+  horizon_max_km?: number
 }
 
 const API_BASE = '/api'

@@ -78,6 +78,9 @@ def run_viewshed_task(self, params: dict):
                 observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
                 tree_height=params.get("tree_height", 30.0),
                 building_height=params.get("building_height", 15.0),
+                horizon_enabled=params.get("horizon_enabled", False),
+                horizon_max_km=params.get("horizon_max_km", 100.0),
+                horizon_cache_dir=str(PROCESSED_DIR / "horizon_cache"),
                 progress_callback=progress,
             )
 
@@ -91,6 +94,8 @@ def run_viewshed_task(self, params: dict):
             "viewshed_path": str(out_path),
             "bbox": list(result["bbox"]),
             "crs": result["crs"].to_string(),
+            "horizon_pass": result.get("horizon_pass"),
+            "horizon_score": result.get("horizon_score"),
         }
     except Exception as exc:
         # Notify the frontend immediately so it can show the error and stop,
@@ -122,6 +127,9 @@ def run_area_search_task(self, params: dict):
                 observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
                 tree_height=params.get("tree_height", 30.0),
                 building_height=params.get("building_height", 15.0),
+                horizon_enabled=params.get("horizon_enabled", False),
+                horizon_max_km=params.get("horizon_max_km", 100.0),
+                horizon_cache_dir=str(PROCESSED_DIR / "horizon_cache"),
                 progress_callback=progress,
             )
 

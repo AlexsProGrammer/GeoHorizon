@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.4] - 2026-08-08
+Implemented the interactive frontend UI for viewshed visualization (Part 5):
+- MapLibre GL JS base map with local PMTiles support for DSGVO-compliant offline rendering.
+- Deck.gl hardware-accelerated overlay layers for the directional cone preview and the viewshed result visualization.
+- Interactive control sidebar with parameter sliders (radius, azimuth, FOV, tree/building offsets).
+- Live geometric cone preview on the map that updates in real-time as parameters change.
+- Zustand state management for observer position, parameters, task progress, and result data.
+- Real-time progress bar driven by a WebSocket connection to `/ws/progress/{task_id}`.
+- Kill Switch cancel button with hard task termination via `/api/viewshed/cancel/{task_id}`.
+- PNG viewshed result endpoint (`GET /api/viewshed/result/{task_id}/image`) converting GeoTIFF output to Deck.gl BitmapLayer-compatible images.
+- Fixed Vite proxy configuration to properly route API requests through the development proxy.
+- Local font bundling via @fontsource/inter — zero external requests.
+- Tailwind CSS for styling with Lucide React icons.
+
 ## [0.1.3] - 2026-08-08
 Implemented real-time task progress and a hard Kill Switch (Part 4):
 - WebSocket endpoint `/ws/progress/{task_id}` streaming Redis Pub/Sub progress frames to the frontend in real time.

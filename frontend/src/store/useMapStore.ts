@@ -89,9 +89,21 @@ export const useMapStore = create<MapState>((set) => ({
   setCog: (selectedCog) => set({ selectedCog }),
   setTaskId: (taskId) => set({ taskId }),
   setProgress: (progress, status, step) => set({ progress, status, step }),
-  setResult: (resultImageUrl, resultBbox) => set({ resultImageUrl, resultBbox }),
+  setResult: (resultImageUrl, resultBbox) =>
+    set((state) => {
+      if (state.resultImageUrl && state.resultImageUrl !== resultImageUrl) {
+        URL.revokeObjectURL(state.resultImageUrl)
+      }
+      return { resultImageUrl, resultBbox }
+    }),
   resetTask: () => set({ taskId: null, progress: 0, status: 'IDLE', step: '' }),
-  resetResult: () => set({ resultImageUrl: null, resultBbox: null }),
+  resetResult: () =>
+    set((state) => {
+      if (state.resultImageUrl) {
+        URL.revokeObjectURL(state.resultImageUrl)
+      }
+      return { resultImageUrl: null, resultBbox: null }
+    }),
   fetchAvailableCogs: async () => {
     try {
       const cogs = await fetchCogBounds()

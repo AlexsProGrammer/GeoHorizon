@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.3
+Version 0.1.4
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -76,11 +76,22 @@ geo-horizon/
     ├── package.json
     ├── vite.config.ts
     ├── public/              # Self-hosted fonts and static assets
+    │   └── style.json       # MapLibre style referencing local PMTiles
     └── src/
-        ├── App.tsx          # Main React component
-        ├── components/      # Map panel, Settings sidebar, Progress bars
-        ├── map/             # MapLibre and Deck.gl overlays
-        └── services/        # WebSocket client and API hooks
+        ├── App.tsx          # Main layout (Sidebar + Map + ProgressBar)
+        ├── main.tsx         # Entry point (local fonts + Tailwind)
+        ├── index.css        # Tailwind directives
+        ├── store/
+        │   └── useMapStore.ts   # Zustand state: parameters, task, progress, result
+        ├── components/
+        │   ├── Sidebar.tsx      # Settings panel (sliders, Calculate/Kill buttons)
+        │   ├── ProgressBar.tsx  # WebSocket-driven loading UI
+        │   └── MapView.tsx      # MapLibre GL + Deck.gl container
+        ├── hooks/
+        │   └── useTaskWebSocket.ts  # WebSocket progress client
+        └── services/
+            ├── api.ts           # API fetch wrappers
+            └── geometry.ts      # Cone-preview polygon generator
 ```
 
 ## Setup Data
@@ -120,6 +131,15 @@ docker compose -f docker/docker-compose.yml up --build -d
 6. Drop your elevation (`.vrt` / `.tif`) and vector (`.pbf`) data into `/data/import/`, then trigger ingestion through the API (see below) or the UI to prime the database.
 
 > **Note:** The `db`, `redis`, `api`, and `worker` services all resolve each other by container name over the `horizon-net` bridge network. Only `db` (5436), `api` (8000), and `frontend` (3002) are published to the host.
+
+## 🗺️ PMTiles Base Map
+
+The frontend requires a local `.pmtiles` base map for offline/DSGVO-compliant rendering:
+
+1. Download a PMTiles file for your region from [OpenFreeMap](https://openfreemap.org/) or generate one with [planetiler](https://github.com/onthegomap/planetiler).
+2. Place the file at `data/pmtiles/basemap.pmtiles`.
+3. The backend serves it statically at `/tiles/basemap.pmtiles`.
+4. Update `frontend/public/style.json` if your tile schema differs from the default (vector source with an OpenMapTiles-compatible schema is assumed).
 
 ## 🔄 Ingestion Pipeline
 
@@ -233,6 +253,15 @@ The **Kill Switch**. Hard-terminates a running viewshed task by revoking the Cel
 
 **Response:** `{ "task_id": "8e3f…", "status": "CANCELLED" }`
 
+### `GET /api/viewshed/result/{task_id}/image`
+Returns the viewshed result as a PNG image with its geographic extent.
+The visibility mask is rendered as semi-transparent green; blocked cells and areas outside the cone are transparent.
+
+**Response headers:**
+- `X-Bounds`: JSON array `[minLng, minLat, maxLng, maxLat]` in EPSG:4326
+- `X-CRS`: Always `EPSG:4326`
+- `Content-Type`: `image/png`
+
 ### `WS /ws/progress/{task_id}`
 Connect for real-time progress of a viewshed task. The server subscribes to the Redis channel `task_progress:{task_id}` and forwards each update verbatim as JSON text:
 
@@ -261,12 +290,13 @@ Environment variables live in `.env` (see `.env.example`):
 - **Part 2 (done):** Automated data ingestion — COG conversion + OSM → PostGIS pipeline.
 - **Part 3 (done):** Viewshed & Line-of-Sight math engine (Rasterio / NumPy / WhiteboxTools) reading from PostGIS with GiST-indexed queries.
 - **Part 4 (done):** Real-time task progress via WebSocket (`/ws/progress/{task_id}`), hard Kill Switch (`/api/viewshed/cancel/{task_id}`), and COG bounds endpoint.
-- **Part 5:** Frontend rendering — MapLibre GL JS + Deck.gl overlay of viewshed results with progress bars and cancel button.
+- **Part 5 (done):** Interactive frontend — MapLibre GL JS + Deck.gl overlay with a local PMTiles base map, directional cone preview, real-time progress bars, and the Kill Switch cancel button.
 
 ## 📝 Changelog
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.4** — Interactive frontend: MapLibre GL + Deck.gl UI with a local PMTiles base map, directional cone preview, real-time progress bars, Kill Switch button, and PNG viewshed result overlay.
 - **0.1.3** — Real-time progress via WebSockets, hard Kill Switch (SIGKILL revoke), COG bounds endpoint, tuned Celery config.
 - **0.1.2** — Viewshed engine: COG windowed reads, DSM builder with PostGIS obstacle overlay, directional cone filter, WhiteboxTools viewshed, and a Celery-backed pipeline (`/api/viewshed`).
 - **0.1.1** — Automated data ingestion pipeline: GDAL/GIS dependencies, PostGIS models, COG + OSM ingestion tasks, and `/api/ingest` endpoints.

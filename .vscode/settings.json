@@ -1,0 +1,11 @@
+{
+  "files.watcherExclude": {
+    "**/data/postgres_data/**": true
+  },
+  "files.exclude": {
+    "**/data/postgres_data/**": true
+  },
+  "search.exclude": {
+    "**/data/postgres_data/**": true
+  }
+}

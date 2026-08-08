@@ -6,12 +6,8 @@ __pycache__/
 # Environment
 .env
 
-# Data directories (contents ignored, structure preserved via .gitkeep)
-data/import/*
-data/processed/*
-data/pmtiles/*
-data/postgres_data/*
-!data/import/.gitkeep
-!data/processed/.gitkeep
-!data/pmtiles/.gitkeep
-!data/postgres_data/.gitkeep
+# Data directories (generated / Docker-owned) - excluded entirely from indexing
+data/
+
+# Kilo Code
+.kilo/*

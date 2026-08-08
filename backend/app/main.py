@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.api.ingest import router as ingest_router
 from app.api.viewshed import router as viewshed_router
+from app.api.ws import router as ws_router
 
 
 def run_migrations() -> None:
@@ -26,6 +27,7 @@ app = FastAPI(title="GeoHorizon API", version="0.1.2", lifespan=lifespan)
 
 app.include_router(ingest_router)
 app.include_router(viewshed_router)
+app.include_router(ws_router)
 
 
 @app.get("/health")

@@ -1,3 +1,5 @@
+import type { FeatureCollection } from 'geojson'
+
 export interface CogInfo {
   name: string
   path: string
@@ -21,6 +23,18 @@ export interface ViewshedRequest {
   building_height: number
 }
 
+export interface AreaSearchRequest {
+  cog_path: string
+  search_area: object // GeoJSON Polygon (WGS84)
+  radius_km: number
+  azimuth: number
+  fov: number
+  grid_step_m: number
+  observer_height: number
+  tree_height: number
+  building_height: number
+}
+
 const API_BASE = '/api'
 
 export async function fetchCogBounds(): Promise<CogInfo[]> {
@@ -38,6 +52,22 @@ export async function startViewshed(params: ViewshedRequest): Promise<{ task_id:
   })
   if (!res.ok) throw new Error(`Failed to start viewshed: ${res.status}`)
   return (await res.json()) as { task_id: string }
+}
+
+export async function startAreaSearch(params: AreaSearchRequest): Promise<{ task_id: string }> {
+  const res = await fetch(`${API_BASE}/viewshed/area-search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) throw new Error(`Failed to start area search: ${res.status}`)
+  return (await res.json()) as { task_id: string }
+}
+
+export async function fetchAreaResult(taskId: string): Promise<FeatureCollection> {
+  const res = await fetch(`${API_BASE}/viewshed/area-result/${taskId}`)
+  if (!res.ok) throw new Error(`Failed to fetch area result: ${res.status}`)
+  return (await res.json()) as FeatureCollection
 }
 
 export async function cancelViewshed(taskId: string): Promise<void> {

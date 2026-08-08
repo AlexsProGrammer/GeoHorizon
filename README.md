@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.5
+Version 0.1.6
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -13,6 +13,7 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 * **Automated Data Pipeline:** Drop raw `.vrt`/GeoTIFF and OpenStreetMap `.pbf` files into a mapped folder, and the backend automatically converts them into Cloud Optimized GeoTIFFs (COGs) and PostGIS tables.
 * **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with WhiteboxTools multi-core line-of-sight calculation.
 * **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
+* **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
 * **Windowed COG Reads:** Never loads full regional DEMs into RAM — only the observer's bounding box is read via `rasterio.windows.from_bounds()`.
 * **The "Kill Switch":** True background task termination. Instantly kill runaway CPU tasks via WebSockets if radius or point density parameters are set too high.
@@ -62,6 +63,7 @@ geo-horizon/
 │       │   └── gis.py        # Building & Forest PostGIS models
 │       ├── engine/           # GIS Math: Rasterio, NumPy, WhiteboxTools (Part 3)
 │       │   ├── __init__.py
+│       │   ├── area_search.py    # Multi-point area search & best-position scoring
 │       │   ├── dsm_builder.py   # COG extraction & obstacle height matrix addition
 │       │   ├── cone_filter.py   # Spatial azimuth & FOV cone calculation
 │       │   ├── viewshed.py      # WhiteboxTools viewshed execution wrapper
@@ -208,6 +210,8 @@ The viewshed engine (`backend/app/engine/`) computes high-accuracy line-of-sight
 
 The full flow is orchestrated by `run_viewshed_pipeline(...)` in `pipeline.py` and executed in the background as a Celery task.
 
+The **area search** engine (`area_search.py`) builds on this flow to find the best positions inside a user-drawn polygon: it crops the DEM and builds the DSM *once* for the whole area, then runs a WhiteboxTools viewshed from every grid point and scores each by `visible cells / cells in the cone`. The scored points are returned as GeoJSON for the frontend to display.
+
 ### `POST /api/viewshed/start`
 Dispatches a viewshed calculation as a Celery task.
 
@@ -228,6 +232,42 @@ Dispatches a viewshed calculation as a Celery task.
 ```
 
 **Response:** `{ "task_id": "8e3f…" }`
+
+### `POST /api/viewshed/area-search`
+Dispatches a multi-point area search as a background Celery task. Finds the best viewing positions inside the given search area by scoring every grid point with a sky-visibility ratio.
+
+**Request body:**
+```json
+{
+  "cog_path": "/data/processed/elevation_cog.tif",
+  "search_area": { "type": "Polygon", "coordinates": [[[12.6, 47.9], ...]] },
+  "radius_km": 5.0,
+  "azimuth": 270,
+  "fov": 40,
+  "grid_step_m": 50,
+  "observer_height": 1.8,
+  "tree_height": 30.0,
+  "building_height": 15.0
+}
+```
+`search_area` is a GeoJSON Polygon in WGS84 (drawn on the frontend). `grid_step_m` controls sampling density (coarser = faster).
+
+**Response:** `{ "task_id": "8e3f…" }`
+
+Progress is streamed over the same `WS /ws/progress/{task_id}` channel (`PREPARING_AREA` → `BUILDING_DSM` → `SAMPLING` → `CALCULATING` with per-point updates).
+
+### `GET /api/viewshed/area-result/{task_id}`
+Returns the scored result of an area search as a GeoJSON `FeatureCollection`. Each feature is a Point with a `score` property (0.0–1.0 = sky-visibility ratio); a `meta.count` field reports the number of sampled points.
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "score": 0.87 }, "geometry": { "type": "Point", "coordinates": [12.6111, 47.9123] } }
+  ],
+  "meta": { "crs": "EPSG:25832", "count": 156 }
+}
+```
 
 ### `GET /api/viewshed/status/{task_id}`
 Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
@@ -301,6 +341,7 @@ Environment variables live in `.env` (see `.env.example`):
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.6** — Area Search (best-position finder): draw a search polygon on the map and the engine scores every sampled grid point by sky-visibility ratio using a single reused DSM. New `/api/viewshed/area-search` + `/api/viewshed/area-result/{task_id}` endpoints, an Analysis Mode toggle (Point/Area), configurable grid step, and a scored-point scatter overlay.
 - **0.1.5** — 360° Panoramic Viewshed: FOV can now be set to 360° for a full circular line-of-sight, alongside the existing directional cone mode. The engine skips the directional mask and produces a symmetric panoramic result; the map preview renders a full circle instead of a wedge.
 - **0.1.4** — Interactive frontend: MapLibre GL + Deck.gl UI with a local PMTiles base map, directional cone preview, real-time progress bars, Kill Switch button, and PNG viewshed result overlay.
 - **0.1.3** — Real-time progress via WebSockets, hard Kill Switch (SIGKILL revoke), COG bounds endpoint, tuned Celery config.

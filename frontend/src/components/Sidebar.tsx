@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
-import { Ban, MapPin, Mountain, Play } from 'lucide-react'
+import { Ban, Crosshair, Map as MapIcon, MapPin, Mountain, Play } from 'lucide-react'
 import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
-import { cancelViewshed, startViewshed } from '../services/api'
+import { cancelViewshed, startAreaSearch, startViewshed } from '../services/api'
 
 const ACTIVE_STATUSES: ViewshedStatus[] = [
   'STARTED',
@@ -10,11 +10,17 @@ const ACTIVE_STATUSES: ViewshedStatus[] = [
   'BUILDING_DSM',
   'COMPUTING_VIEWSHED',
   'APPLYING_CONE',
+  'PREPARING_AREA',
+  'SAMPLING',
+  'CALCULATING',
 ]
 
 export default function Sidebar() {
   const observerLat = useMapStore((s) => s.observerLat)
   const observerLng = useMapStore((s) => s.observerLng)
+  const searchMode = useMapStore((s) => s.searchMode)
+  const searchPolygon = useMapStore((s) => s.searchPolygon)
+  const gridStepM = useMapStore((s) => s.gridStepM)
   const radiusKm = useMapStore((s) => s.radiusKm)
   const azimuth = useMapStore((s) => s.azimuth)
   const fov = useMapStore((s) => s.fov)
@@ -32,6 +38,8 @@ export default function Sidebar() {
   const setTreeOffset = useMapStore((s) => s.setTreeOffset)
   const setBuildingOffset = useMapStore((s) => s.setBuildingOffset)
   const setObserverHeight = useMapStore((s) => s.setObserverHeight)
+  const setSearchMode = useMapStore((s) => s.setSearchMode)
+  const setGridStep = useMapStore((s) => s.setGridStep)
   const setCog = useMapStore((s) => s.setCog)
   const setTaskId = useMapStore((s) => s.setTaskId)
   const setProgress = useMapStore((s) => s.setProgress)
@@ -46,25 +54,48 @@ export default function Sidebar() {
 
   const isProcessing = ACTIVE_STATUSES.includes(status)
   const canCalculate =
-    observerLat != null && observerLng != null && !!selectedCog && !isProcessing
+    !!selectedCog &&
+    !isProcessing &&
+    (searchMode === 'point'
+      ? observerLat != null && observerLng != null
+      : searchPolygon != null)
 
   async function handleCalculate() {
-    if (!canCalculate || observerLat == null || observerLng == null || !selectedCog) return
+    if (!canCalculate || !selectedCog) return
     resetResult()
     setError(null)
     setProgress(0, 'STARTED', 'Dispatching task...')
     try {
-      const { task_id } = await startViewshed({
-        cog_path: selectedCog,
-        lat: observerLat,
-        lng: observerLng,
-        radius_km: radiusKm,
-        azimuth,
-        fov,
-        observer_height: observerHeight,
-        tree_height: treeOffset,
-        building_height: buildingOffset,
-      })
+      let task_id: string
+      if (searchMode === 'area' && searchPolygon) {
+        const res = await startAreaSearch({
+          cog_path: selectedCog,
+          search_area: searchPolygon.geometry,
+          radius_km: radiusKm,
+          azimuth,
+          fov,
+          grid_step_m: gridStepM,
+          observer_height: observerHeight,
+          tree_height: treeOffset,
+          building_height: buildingOffset,
+        })
+        task_id = res.task_id
+      } else if (observerLat != null && observerLng != null) {
+        const res = await startViewshed({
+          cog_path: selectedCog,
+          lat: observerLat,
+          lng: observerLng,
+          radius_km: radiusKm,
+          azimuth,
+          fov,
+          observer_height: observerHeight,
+          tree_height: treeOffset,
+          building_height: buildingOffset,
+        })
+        task_id = res.task_id
+      } else {
+        return
+      }
       setTaskId(task_id)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -88,15 +119,57 @@ export default function Sidebar() {
       <h1 className="text-2xl font-bold text-zinc-800">HorizonVista</h1>
 
       <section>
+        <h2 className="mb-2 text-sm font-semibold text-zinc-700">Analysis Mode</h2>
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-100 p-1">
+          <button
+            onClick={() => setSearchMode('point')}
+            className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+              searchMode === 'point'
+                ? 'bg-white text-emerald-700 shadow-sm'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+          >
+            <Crosshair size={15} /> Point
+          </button>
+          <button
+            onClick={() => setSearchMode('area')}
+            className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+              searchMode === 'area'
+                ? 'bg-white text-emerald-700 shadow-sm'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+          >
+            <MapIcon size={15} /> Area
+          </button>
+        </div>
+      </section>
+
+      <section>
         <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-zinc-700">
-          <MapPin size={16} className="text-zinc-500" /> Observer Position
+          {searchMode === 'point' ? (
+            <>
+              <MapPin size={16} className="text-zinc-500" /> Observer Position
+            </>
+          ) : (
+            <>
+              <MapIcon size={16} className="text-zinc-500" /> Search Area
+            </>
+          )}
         </h2>
-        {observerLat != null && observerLng != null ? (
-          <p className="text-sm text-zinc-600">
-            {observerLat.toFixed(5)}, {observerLng.toFixed(5)}
-          </p>
+        {searchMode === 'point' ? (
+          observerLat != null && observerLng != null ? (
+            <p className="text-sm text-zinc-600">
+              {observerLat.toFixed(5)}, {observerLng.toFixed(5)}
+            </p>
+          ) : (
+            <p className="text-sm text-zinc-500">Click on the map to set the observer position.</p>
+          )
+        ) : searchPolygon ? (
+          <p className="text-sm text-zinc-600">Area ready — calculate to find the best views.</p>
         ) : (
-          <p className="text-sm text-zinc-500">Click on the map to set the observer position.</p>
+          <p className="text-sm text-zinc-500">
+            Draw a polygon on the map, then click “Finish area”.
+          </p>
         )}
       </section>
 
@@ -131,6 +204,17 @@ export default function Sidebar() {
         step={5}
         onChange={setFov}
       />
+      {searchMode === 'area' && (
+        <Slider
+          label="Grid Step"
+          value={gridStepM}
+          display={`${gridStepM} m`}
+          min={10}
+          max={500}
+          step={10}
+          onChange={setGridStep}
+        />
+      )}
       <Slider label="Tree Offset" value={treeOffset} display={`${treeOffset} m`} min={0} max={100} step={1} onChange={setTreeOffset} />
       <Slider label="Building Offset" value={buildingOffset} display={`${buildingOffset} m`} min={0} max={100} step={1} onChange={setBuildingOffset} />
 
@@ -163,7 +247,7 @@ export default function Sidebar() {
           disabled={!canCalculate}
           className="flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <Play size={16} /> Calculate
+          <Play size={16} /> {searchMode === 'area' ? 'Search Area' : 'Calculate'}
         </button>
       )}
     </aside>

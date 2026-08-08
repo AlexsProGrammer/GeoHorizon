@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.6] - 2026-08-08
+Added the multi-point area search engine for finding the best viewing positions inside a user-drawn area:
+- **Backend:** New `engine/area_search.py` module. It transforms the WGS84 search polygon into the DEM CRS, crops the DEM window and builds the DSM **once** for the whole area, samples a regular grid of points at a configurable step, runs a WhiteboxTools viewshed from every point, and scores each by sky-visibility ratio (visible cells / cells in the viewing cone).
+- **Backend:** New Celery task `viewshed.run_area_search` persisting the scored result as GeoJSON (`/data/processed/area_{task_id}.json`) and streaming stage-by-stage progress (`PREPARING_AREA`, `BUILDING_DSM`, `SAMPLING`, `CALCULATING`).
+- **Backend:** New endpoints `POST /api/viewshed/area-search` and `GET /api/viewshed/area-result/{task_id}`.
+- **Backend:** New `AreaSearchRequest` model (`cog_path`, `search_area` GeoJSON, `radius_km`, `azimuth`, `fov`, `grid_step_m`, heights).
+- **Tests:** New `tests/test_area_search.py` covering grid sampling, sky-ratio scoring, and the scored FeatureCollection output.
+- **Frontend:** "Analysis Mode" toggle in the sidebar (Point / Area). In Area mode the user draws a polygon on the map (click to add vertices, "Finish area" to close) with a live draft preview, sets a grid-step slider, and runs a Search Area task.
+- **Frontend:** Result rendered as a scored green scatter overlay via Deck.gl `ScatterplotLayer`; the single-point flow is unchanged.
+
 ## [0.1.5] - 2026-08-08
 Added 360° panoramic viewshed support on top of the existing directional cone mode:
 - **Backend:** The viewshed pipeline now treats `fov >= 360` as a full panoramic sweep. It skips the directional wedge and applies a simple circular radius mask instead, producing a symmetric 360° line-of-sight result. Directional cone behaviour is unchanged for `fov < 360`.

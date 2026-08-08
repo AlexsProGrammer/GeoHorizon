@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { fetchCogBounds, type CogInfo } from '../services/api'
+import type { Feature, FeatureCollection, Polygon } from 'geojson'
 
 export type ViewshedStatus =
   | 'IDLE'
@@ -9,9 +10,14 @@ export type ViewshedStatus =
   | 'BUILDING_DSM'
   | 'COMPUTING_VIEWSHED'
   | 'APPLYING_CONE'
+  | 'PREPARING_AREA'
+  | 'SAMPLING'
+  | 'CALCULATING'
   | 'SUCCESS'
   | 'CANCELLED'
   | 'FAILURE'
+
+export type SearchMode = 'point' | 'area'
 
 interface MapState {
   // Observer position (set by map click)
@@ -25,6 +31,13 @@ interface MapState {
   treeOffset: number
   buildingOffset: number
   observerHeight: number
+
+  // Area search state
+  searchMode: SearchMode
+  searchPolygon: Feature<Polygon> | null
+  draftVertices: [number, number][]
+  gridStepM: number
+  resultGeoJSON: FeatureCollection | null
 
   // Available COGs (from /api/viewshed/bounds)
   selectedCog: string | null
@@ -49,6 +62,12 @@ interface MapState {
   setTreeOffset: (m: number) => void
   setBuildingOffset: (m: number) => void
   setObserverHeight: (m: number) => void
+  setSearchMode: (mode: SearchMode) => void
+  setSearchPolygon: (polygon: Feature<Polygon> | null) => void
+  addDraftVertex: (lngLat: [number, number]) => void
+  clearDraft: () => void
+  setGridStep: (m: number) => void
+  setResultGeoJSON: (geojson: FeatureCollection | null) => void
   setCog: (path: string) => void
   setTaskId: (id: string | null) => void
   setProgress: (progress: number, status: ViewshedStatus, step: string) => void
@@ -70,6 +89,12 @@ export const useMapStore = create<MapState>((set) => ({
   buildingOffset: 15,
   observerHeight: 1.8,
 
+  searchMode: 'point',
+  searchPolygon: null,
+  draftVertices: [],
+  gridStepM: 50,
+  resultGeoJSON: null,
+
   selectedCog: null,
   availableCogs: [],
 
@@ -89,6 +114,20 @@ export const useMapStore = create<MapState>((set) => ({
   setTreeOffset: (treeOffset) => set({ treeOffset }),
   setBuildingOffset: (buildingOffset) => set({ buildingOffset }),
   setObserverHeight: (observerHeight) => set({ observerHeight }),
+  setSearchMode: (searchMode) =>
+    set({ searchMode, searchPolygon: null, draftVertices: [], resultGeoJSON: null }),
+  setSearchPolygon: (searchPolygon) => set({ searchPolygon }),
+  addDraftVertex: (lngLat) =>
+    set((state) => ({
+      draftVertices: state.draftVertices.some(
+        (v) => v[0] === lngLat[0] && v[1] === lngLat[1],
+      )
+        ? state.draftVertices
+        : [...state.draftVertices, lngLat],
+    })),
+  clearDraft: () => set({ draftVertices: [] }),
+  setGridStep: (gridStepM) => set({ gridStepM }),
+  setResultGeoJSON: (resultGeoJSON) => set({ resultGeoJSON }),
   setCog: (selectedCog) => set({ selectedCog }),
   setTaskId: (taskId) => set({ taskId }),
   setProgress: (progress, status, step) => set({ progress, status, step }),
@@ -107,7 +146,7 @@ export const useMapStore = create<MapState>((set) => ({
       if (state.resultImageUrl) {
         URL.revokeObjectURL(state.resultImageUrl)
       }
-      return { resultImageUrl: null, resultBbox: null }
+      return { resultImageUrl: null, resultBbox: null, resultGeoJSON: null }
     }),
   fetchAvailableCogs: async () => {
     try {

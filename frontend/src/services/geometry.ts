@@ -1,6 +1,26 @@
 import type { Feature, Polygon } from 'geojson'
 
 /**
+ * Build a GeoJSON Polygon feature from an ordered list of vertices.
+ * The polygon ring is closed automatically if not already.
+ */
+export function buildPolygonFeature(
+  vertices: [number, number][],
+): Feature<Polygon> {
+  const ring = vertices.length >= 3 ? [...vertices] : [[0, 0]]
+  const first = ring[0]
+  const last = ring[ring.length - 1]
+  if (last[0] !== first[0] || last[1] !== first[1]) {
+    ring.push(first)
+  }
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'Polygon', coordinates: [ring] },
+  }
+}
+
+/**
  * Build a wedge/cone polygon representing the directional viewshed preview.
  *
  * The cone originates at `(lng, lat)`, points toward `azimuth` (0 = North,

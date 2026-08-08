@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from rasterio.warp import transform_bounds
 
 from app.worker import celery_app
-from app.worker.viewshed_tasks import run_viewshed_task
+from app.worker.viewshed_tasks import run_area_search_task, run_viewshed_task
 
 router = APIRouter(prefix="/viewshed", tags=["viewshed"])
 
@@ -38,10 +38,47 @@ class ViewshedRequest(BaseModel):
     point_density: int | None = None
 
 
+class AreaSearchRequest(BaseModel):
+    cog_path: str
+    search_area: dict  # GeoJSON Polygon (WGS84)
+    radius_km: float
+    azimuth: float
+    fov: float
+    grid_step_m: float = 50.0
+    observer_height: float = 1.8
+    tree_height: float = 30.0
+    building_height: float = 15.0
+
+
 @router.post("/start")
 async def start(payload: ViewshedRequest):
     task = run_viewshed_task.delay(payload.model_dump())
     return {"task_id": task.id}
+
+
+@router.post("/area-search")
+async def area_search(payload: AreaSearchRequest):
+    """Dispatch a multi-point area search as a background Celery task."""
+    task = run_area_search_task.delay(payload.model_dump())
+    return {"task_id": task.id}
+
+
+@router.get("/area-result/{task_id}")
+async def area_result(task_id: str):
+    """Return the scored GeoJSON FeatureCollection of an area search task."""
+    result: AsyncResult = celery_app.AsyncResult(task_id)
+    if result.state == "SUCCESS":
+        result_path = PROCESSED_DIR / f"area_{task_id}.json"
+        if result_path.exists():
+            return json.loads(result_path.read_text())
+        # Fall back to the Celery result payload if the file is missing.
+        payload = result.result
+        if isinstance(payload, dict) and "result_path" in payload:
+            return json.loads(Path(payload["result_path"]).read_text())
+        return {"type": "FeatureCollection", "features": [], "meta": {"count": 0}}
+    if result.state == "FAILURE":
+        raise HTTPException(status_code=500, detail=str(result.info))
+    raise HTTPException(status_code=202, detail="Task not finished yet")
 
 
 @router.get("/status/{task_id}")

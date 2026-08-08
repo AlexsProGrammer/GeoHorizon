@@ -11,6 +11,7 @@ import rasterio
 import redis
 
 from app.core.db import SessionLocal
+from app.engine.area_search import run_area_search
 from app.engine.pipeline import run_viewshed_pipeline
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT
 from app.worker import celery_app
@@ -95,4 +96,46 @@ def run_viewshed_task(self, params: dict):
         # Notify the frontend immediately so it can show the error and stop,
         # then re-raise so Celery still records the task as failed.
         progress("FAILURE", 0, f"Calculation failed: {exc}")
+        raise
+
+
+@celery_app.task(bind=True, name="viewshed.run_area_search")
+def run_area_search_task(self, params: dict):
+    """Run a multi-point area search and persist the scored GeoJSON result."""
+    task_id = self.request.id
+
+    def progress(status: str, pct: int, step: str) -> None:
+        _publish_progress(task_id, status, pct, step)
+
+    progress("STARTED", 5, "Starting area search")
+
+    try:
+        with SessionLocal() as session:
+            fc = run_area_search(
+                session,
+                cog_path=params["cog_path"],
+                search_area_geojson=params["search_area"],
+                radius_km=params["radius_km"],
+                azimuth=params["azimuth"],
+                fov=params["fov"],
+                grid_step_m=params["grid_step_m"],
+                observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
+                tree_height=params.get("tree_height", 30.0),
+                building_height=params.get("building_height", 15.0),
+                progress_callback=progress,
+            )
+
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = PROCESSED_DIR / f"area_{task_id}.json"
+        out_path.write_text(json.dumps(fc))
+
+        progress("SUCCESS", 100, "Complete")
+
+        return {
+            "result_path": str(out_path),
+            "count": fc["meta"]["count"],
+            "crs": fc["meta"]["crs"],
+        }
+    except Exception as exc:
+        progress("FAILURE", 0, f"Area search failed: {exc}")
         raise

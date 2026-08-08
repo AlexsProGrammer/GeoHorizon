@@ -60,10 +60,40 @@ function collectHoverFeatures(
   return out
 }
 
+/**
+ * Sample the absolute elevation (m above sea level) directly from the backend COG.
+ * Unlike MapLibre's terrain read (which returns 0 whenever the hovered point's DEM
+ * tile isn't in its evicted/lazily-loaded cache), this is always correct.
+ */
+async function fetchElevation(lng: number, lat: number): Promise<number | null> {
+  try {
+    const r = await fetch(`/api/viewshed/elevation?lng=${lng}&lat=${lat}`)
+    if (!r.ok) return null
+    const d = await r.json()
+    return typeof d.elevation === 'number' && Number.isFinite(d.elevation)
+      ? d.elevation
+      : null
+  } catch {
+    return null
+  }
+}
+
 export default function MapView() {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const overlayRef = useRef<MapboxOverlay | null>(null)
+  // Hover bookkeeping: the current pointer state (for the tooltip) plus the last
+  // successfully fetched elevation and throttling/token refs for the COG sampler.
+  const hoverStateRef = useRef<{
+    lng: number
+    lat: number
+    features: string[]
+    x: number
+    y: number
+  } | null>(null)
+  const elevRef = useRef<number | null>(null)
+  const lastElevFetchRef = useRef(0)
+  const elevFetchTokenRef = useRef(0)
 
   const observerLat = useMapStore((s) => s.observerLat)
   const observerLng = useMapStore((s) => s.observerLng)
@@ -97,22 +127,22 @@ export default function MapView() {
 
     // Share the depth buffer with MapLibre terrain (fixes z-fighting between
     // the overlay layers and the 3D surface) and apply transparent blending.
+    // interleaved:true keeps Deck.gl in MapLibre's 3D scene, so the cone/polygon
+    // stay glued to the terrain (no parallax / floating) when panning & rotating.
     const overlay = new MapboxOverlay({
-      interleaved: false,            // MAPLIBRE-compatible rendering path (was: true)
-      parameters: { blend: true },   // drop depthTest: Deck.gl draws in its own top layer
+      interleaved: true,
+      parameters: { depthTest: true, blend: true },
     })
     overlayRef.current = overlay
     map.addControl(overlay)
 
     // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
-    // DISABLED (ISOLATION TEST): re-enable after confirming the NaN cause.
-    const enableTerrain = false
     map.on('load', () => {
-      if (!enableTerrain) return
       if (map.getSource('terrain-dem')) return
       map.addSource('terrain-dem', {
         type: 'raster-dem',
-        tiles: ['/api/viewshed/terrain/{z}/{x}/{y}.png'],
+        // ?v=2 busts browsers' stale HTTP cache of the old (buggy-encoded) tiles.
+        tiles: ['/api/viewshed/terrain/{z}/{x}/{y}.png?v=2'],
         tileSize: 256,
         maxzoom: 15,
         encoding: 'mapbox',
@@ -121,30 +151,43 @@ export default function MapView() {
     })
 
     // Mouse hover: capture coordinates, terrain elevation and OSM features.
+    // Elevation is fetched (throttled) from the backend COG instead of MapLibre's
+    // terrain, because MapLibre returns 0 once the hovered point's DEM tile falls
+    // out of its cache after panning/zooming.
     const onMove = (e: maplibregl.MapMouseEvent) => {
-      let elevation: number | null = null
-      try {
-        const el = map.queryTerrainElevation(e.lngLat)
-        if (typeof el === 'number' && isFinite(el)) elevation = el
-      } catch {
-        elevation = null
-      }
+      const lng = e.lngLat.lng
+      const lat = e.lngLat.lat
       const features = collectHoverFeatures(
         map.queryRenderedFeatures(e.point) as Array<{
           layer?: { id?: string }
           properties?: Record<string, unknown>
         }>,
       )
-      setHoverPosition({
-        lng: e.lngLat.lng,
-        lat: e.lngLat.lat,
-        elevation,
-        features,
-        x: e.point.x,
-        y: e.point.y,
-      })
+      const pos = { lng, lat, features, x: e.point.x, y: e.point.y }
+      hoverStateRef.current = pos
+      setHoverPosition({ ...pos, elevation: elevRef.current })
+
+      // Throttled backend elevation sample for the current pointer position.
+      const now = performance.now()
+      if (now - lastElevFetchRef.current > 150) {
+        lastElevFetchRef.current = now
+        const token = ++elevFetchTokenRef.current
+        fetchElevation(lng, lat).then((elev) => {
+          if (token !== elevFetchTokenRef.current) return // superseded by a newer move
+          elevRef.current = elev
+          const hs = hoverStateRef.current
+          if (hs && hs.lng === lng && hs.lat === lat) {
+            setHoverPosition({ ...hs, elevation: elev })
+          }
+        })
+      }
     }
-    const onLeave = () => setHoverPosition(null)
+    const onLeave = () => {
+      setHoverPosition(null)
+      hoverStateRef.current = null
+      elevRef.current = null
+      elevFetchTokenRef.current++ // invalidate any in-flight fetch
+    }
     map.on('mousemove', onMove)
     map.on('mouseleave', onLeave)
 
@@ -189,6 +232,10 @@ export default function MapView() {
       getLineColor: [30, 120, 255, 200],
       lineWidthMinPixels: 2,
       pickable: false,
+      // Draw above terrain: interleaved depth-testing against the 3D surface can
+      // occlude flat overlays at certain zooms (they vanish). Disabling the depth
+      // test keeps the cone always visible while panning/zooming.
+      parameters: { depthTest: false },
     })
   }, [searchMode, observerLat, observerLng, radiusKm, azimuth, fov])
 
@@ -204,6 +251,7 @@ export default function MapView() {
       getLineColor: [16, 185, 129, 230],
       lineWidthMinPixels: 2,
       pickable: false,
+      parameters: { depthTest: false },
     })
   }, [searchPolygon])
 
@@ -229,6 +277,7 @@ export default function MapView() {
       getLineColor: [249, 115, 22, 230],
       lineWidthMinPixels: 2,
       pickable: false,
+      parameters: { depthTest: false },
     })
   }, [searchMode, draftVertices])
 

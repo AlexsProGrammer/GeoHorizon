@@ -51,18 +51,26 @@ def _tile_mercator_bounds(x: int, y: int, z: int) -> tuple[float, float, float, 
 
 
 def _encode_mapbox(elev: np.ndarray) -> np.ndarray:
-    """Encode elevations (m) as a Mapbox terrain-RGB (R,G,B) 8-bit array.
+    """Encode elevations (m) as a standard Mapbox terrain-RGB (R,G,B) 8-bit array.
 
-    elevation = -10000 + (R * 256² + G * 256 + B) * 0.1
+    The 24-bit integer stored in RGB is ``round((elevation_m + 10000) * 10)``
+    and MapLibre decodes it back with::
+
+        elevation = (R * 256² + G * 256 + B) * 0.1 - 10000
+
+    (See the Mapbox terrain-RGB spec; this is what MapLibre's ``raster-dem``
+    source with ``encoding: 'mapbox'`` expects.) Encoding the plain ``elev+10000``
+    without the ``*10`` scale made MapLibre decode every value ~10x too small and
+    shifted by +10000, producing elevations near zero / hugely negative.
     """
     shape = elev.shape
     out = np.zeros((3, *shape), dtype=np.uint8)
     valid = np.isfinite(elev) & (elev > -9000.0)
-    ee = np.clip(elev[valid] + 10000.0, 0.0, 16777214.0).astype(np.int64)
+    ee = np.clip(np.rint((elev[valid] + 10000.0) * 10.0), 0.0, 16777215.0).astype(np.int64)
     out[0][valid] = (ee >> 16) & 0xFF
     out[1][valid] = (ee >> 8) & 0xFF
     out[2][valid] = ee & 0xFF
-    # Invalid / no-data stays (0,0,0) which encodes -10000 m (far below sea).
+    # Invalid / no-data stays (0,0,0) which decodes to -10000 m (far below sea).
     return out
 
 

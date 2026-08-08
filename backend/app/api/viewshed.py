@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from PIL import Image
 from pydantic import BaseModel
-from rasterio.warp import transform_bounds
+from rasterio.warp import transform, transform_bounds
 
 from app.engine.terrain_tiles import render_terrain_tile
 from app.worker import celery_app
@@ -201,6 +201,42 @@ async def bounds():
             except Exception:
                 continue
     return {"cogs": cogs}
+
+
+@router.get("/elevation")
+async def elevation(lng: float, lat: float):
+    """Return the absolute elevation (meters above sea level) from the first
+    processed COG at the given WGS84 coordinate (``lng``, ``lat``).
+
+    Samples the DEM directly from the COG — independent of MapLibre's terrain
+    tile cache on the client — so hover elevation is always correct even after
+    panning/zooming (when MapLibre's in-memory DEM tiles may not be loaded yet).
+    """
+    cogs = sorted(PROCESSED_DIR.glob("*_cog.tif")) if PROCESSED_DIR.is_dir() else []
+    if not cogs:
+        raise HTTPException(status_code=404, detail="No processed COG available")
+    cog = str(cogs[0])
+    try:
+        with rasterio.open(cog) as src:
+            if src.crs and src.crs.is_geographic:
+                x, y = (lng, lat)
+            else:
+                sx, sy = transform("EPSG:4326", src.crs, [lng], [lat])
+                x, y = sx[0], sy[0]
+            row, col = src.index(x, y)
+            h, w = src.height, src.width
+            if not (0 <= row < h and 0 <= col < w):
+                return {"elevation": None}
+            val = float(src.read(1, window=((row, row + 1), (col, col + 1)))[0, 0])
+            nodata = src.nodata
+    except Exception:
+        return {"elevation": None}
+
+    if not np.isfinite(val):
+        return {"elevation": None}
+    if nodata is not None and val == nodata:
+        return {"elevation": None}
+    return {"elevation": val}
 
 
 @router.get("/terrain/{z}/{x}/{y}.png")

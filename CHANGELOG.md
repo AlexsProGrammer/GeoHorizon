@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.10] - 2026-08-08
+Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
+- **Fixed terrain-RGB encoding:** `engine/terrain_tiles.py` now stores the Mapbox-standard
+  24-bit value `round((elevation_m + 10000) * 10)` instead of the raw `elevation + 10000`.
+  MapLibre decodes this with `value * 0.1 - 10000`, so the old encoder made the terrain mesh
+  decode every elevation ~10x too small and shifted. Verified round-trip against the real DEM
+  within 0.03 m.
+- **Fixed hover elevation (absolute height):** `map.queryTerrainElevation()` returns the
+  elevation *relative to the map-center reference* (it subtracts MapLibre's `transform.elevation`),
+  so it showed only local relief instead of true sea level. MapLibre's terrain read also returns
+  `0` once a point's DEM tile falls out of its cache after panning/zooming. The hover tooltip now
+  samples the DEM **directly from the COG** via a new throttled endpoint `GET /api/viewshed/elevation?lng=&lat=`
+  (backend `api/viewshed.py`), which is always correct regardless of client tile cache.
+- **Overlay visibility fix:** the cone/search-area/draft Deck.gl layers now render with
+  `depthTest: false`, so they can no longer be occluded by the 3D terrain at certain zoom levels
+  (previously they intermittently disappeared while zooming).
+- **Stale tile cache busted:** old buggy-encoded terrain tiles were cached both on disk and in
+  the browser (`Cache-Control: max-age=86400`), so viewers kept seeing outdated heights (e.g.
+  `-8945`). The disk cache was purged and the `raster-dem` tile URL now carries a `?v=2` cache
+  busting query param. Stale tiles were also a contributor to the `Invalid LngLat (NaN, NaN)`
+  transform errors during interaction; correct tiles stabilize the mesh.
+- **Restored Deck.gl interleaved rendering:** `MapboxOverlay` renders with `interleaved: true`
+  (shared depth buffer with terrain), keeping the cone/search-area/result overlays glued to the
+  terrain when panning and rotating. A brief `interleaved: false` experiment fixed the map
+  blanking but broke overlay 3D placement (parallax / floating polygons), so interleaved
+  rendering is used again now that the terrain mesh is correct.
+
 ## [0.1.9] - 2026-08-08
 Added 3D terrain, z-fighting fixes, a compass and a hover tooltip:
 - **3D terrain:** New `engine/terrain_tiles.py` renders Mapbox terrain-RGB PNG tiles from the DEM COG on demand (Web-Mercator warp + RGB elevation encoding), served at `GET /api/viewshed/terrain/{z}/{x}/{y}.png` and cached to `/data/processed/terrain_cache/`. `MapView` adds a `raster-dem` source and `map.setTerrain(...)` (exaggeration 1.5) so hills and valleys render in 3D.

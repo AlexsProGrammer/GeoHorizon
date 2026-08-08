@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol } from 'pmtiles'
-import type { Feature, Geometry } from 'geojson'
+import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import { MapboxOverlay } from '@deck.gl/mapbox'
-import { BitmapLayer, GeoJsonLayer, ScatterplotLayer } from '@deck.gl/layers'
+import { BitmapLayer } from '@deck.gl/layers'
 import { useMapStore } from '../store/useMapStore'
 import { buildConePolygon, buildPolygonFeature } from '../services/geometry'
 import Compass from './Compass'
@@ -16,6 +16,21 @@ maplibregl.addProtocol('pmtiles', protocol.tile)
 
 // Default view centered on the imported Oberbayern / Traunreut area.
 const DEFAULT_CENTER: [number, number] = [12.65, 47.95]
+
+// Empty GeoJSON used to clear native MapLibre overlay sources.
+const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] }
+
+// Threshold coloring for area-search results (matches the legend: green/yellow/red).
+function resultColor(score: number): string {
+  if (score >= 0.7) return '#22c55e'
+  if (score >= 0.3) return '#eab308'
+  return '#ef4444'
+}
+function resultVisible(score: number, vis: { green: boolean; yellow: boolean; red: boolean }): boolean {
+  if (score >= 0.7) return vis.green
+  if (score >= 0.3) return vis.yellow
+  return vis.red
+}
 
 // Friendly labels for the layers in public/style.json (OpenMapTiles-like).
 const FEATURE_LABELS: Record<string, string> = {
@@ -113,6 +128,65 @@ export default function MapView() {
   const clearDraft = useMapStore((s) => s.clearDraft)
   const setHoverPosition = useMapStore((s) => s.setHoverPosition)
 
+  // ---- Native MapLibre overlay updaters ------------------------------------
+  // These render the cone, search area, draft, and scored result points as native
+  // MapLibre vector layers, which MapLibre lays directly onto the 3D terrain so
+  // they stay glued with no parallax when panning/rotating and never get occluded.
+  function updateCone() {
+    const map = mapRef.current
+    if (!map) return
+    const src = map.getSource('gh-cone') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const show = searchMode === 'point' && observerLat != null && observerLng != null
+    src.setData(show ? (buildConePolygon(observerLng!, observerLat!, radiusKm, azimuth, fov) as unknown as any) : (EMPTY_FC as unknown as any))
+    map.setLayoutProperty('gh-cone-fill', 'visibility', show ? 'visible' : 'none')
+    map.setLayoutProperty('gh-cone-line', 'visibility', show ? 'visible' : 'none')
+  }
+  function updateSearch() {
+    const map = mapRef.current
+    if (!map) return
+    const src = map.getSource('gh-search') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const show = searchPolygon != null
+    src.setData((searchPolygon ?? EMPTY_FC) as unknown as any)
+    map.setLayoutProperty('gh-search-fill', 'visibility', show ? 'visible' : 'none')
+    map.setLayoutProperty('gh-search-line', 'visibility', show ? 'visible' : 'none')
+  }
+  function updateDraft() {
+    const map = mapRef.current
+    if (!map) return
+    const src = map.getSource('gh-draft') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const show = searchMode === 'area' && draftVertices.length >= 2
+    if (show) {
+      const f: Feature<Geometry> =
+        draftVertices.length >= 3
+          ? (buildPolygonFeature(draftVertices) as unknown as Feature<Geometry>)
+          : { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: draftVertices } }
+      src.setData(f as unknown as any)
+    } else {
+      src.setData(EMPTY_FC as unknown as any)
+    }
+    map.setLayoutProperty('gh-draft-fill', 'visibility', show ? 'visible' : 'none')
+    map.setLayoutProperty('gh-draft-line', 'visibility', show ? 'visible' : 'none')
+  }
+  function updateResult() {
+    const map = mapRef.current
+    if (!map) return
+    const src = map.getSource('gh-result') as maplibregl.GeoJSONSource | undefined
+    if (!src) return
+    const feats = (resultGeoJSON?.features ?? []).filter((f) => {
+      const s = (f.properties?.score as number | undefined) ?? 0
+      return f.geometry.type === 'Point' && resultVisible(s, legendVisibility)
+    }).map((f) => {
+      const s = (f.properties?.score as number | undefined) ?? 0
+      const props = { ...f.properties, color: resultColor(s) }
+      return { type: 'Feature', properties: props, geometry: f.geometry }
+    })
+    src.setData({ type: 'FeatureCollection', features: feats } as unknown as any)
+    map.setLayoutProperty('gh-result', 'visibility', feats.length ? 'visible' : 'none')
+  }
+
   // Initialize the MapLibre map and Deck.gl overlay once.
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
@@ -138,16 +212,67 @@ export default function MapView() {
 
     // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
     map.on('load', () => {
-      if (map.getSource('terrain-dem')) return
-      map.addSource('terrain-dem', {
-        type: 'raster-dem',
-        // ?v=2 busts browsers' stale HTTP cache of the old (buggy-encoded) tiles.
-        tiles: ['/api/viewshed/terrain/{z}/{x}/{y}.png?v=2'],
-        tileSize: 256,
-        maxzoom: 15,
-        encoding: 'mapbox',
-      } as maplibregl.RasterDEMSourceSpecification)
-      map.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 })
+      if (!map.getSource('terrain-dem')) {
+        map.addSource('terrain-dem', {
+          type: 'raster-dem',
+          // ?v=2 busts browsers' stale HTTP cache of the old (buggy-encoded) tiles.
+          tiles: ['/api/viewshed/terrain/{z}/{x}/{y}.png?v=2'],
+          tileSize: 256,
+          maxzoom: 15,
+          encoding: 'mapbox',
+        } as maplibregl.RasterDEMSourceSpecification)
+        map.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 })
+      }
+
+      // Native overlay sources/layers (glued to the 3D terrain, no parallax).
+      if (!map.getSource('gh-cone')) {
+        map.addSource('gh-cone', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-cone-fill', type: 'fill', source: 'gh-cone',
+          paint: { 'fill-color': '#64c8ff', 'fill-opacity': 0.22, 'fill-outline-color': '#1e78ff' },
+        })
+        map.addLayer({
+          id: 'gh-cone-line', type: 'line', source: 'gh-cone',
+          paint: { 'line-color': '#1e78ff', 'line-width': 2 },
+        })
+
+        map.addSource('gh-search', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-search-fill', type: 'fill', source: 'gh-search',
+          paint: { 'fill-color': '#22c55e', 'fill-opacity': 0.16, 'fill-outline-color': '#10b981' },
+        })
+        map.addLayer({
+          id: 'gh-search-line', type: 'line', source: 'gh-search',
+          paint: { 'line-color': '#10b981', 'line-width': 2 },
+        })
+
+        map.addSource('gh-draft', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-draft-fill', type: 'fill', source: 'gh-draft',
+          paint: { 'fill-color': '#fb923c', 'fill-opacity': 0.24, 'fill-outline-color': '#f97316' },
+        })
+        map.addLayer({
+          id: 'gh-draft-line', type: 'line', source: 'gh-draft',
+          paint: { 'line-color': '#f97316', 'line-width': 2 },
+        })
+
+        map.addSource('gh-result', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-result', type: 'circle', source: 'gh-result',
+          paint: {
+            'circle-color': ['get', 'color'],
+            'circle-radius': 6,
+            'circle-stroke-color': 'rgba(0,0,0,0.45)',
+            'circle-stroke-width': 1,
+          },
+        })
+      }
+
+      // Initial population using current state.
+      updateCone()
+      updateSearch()
+      updateDraft()
+      updateResult()
     })
 
     // Mouse hover: capture coordinates, terrain elevation and OSM features.
@@ -218,70 +343,28 @@ export default function MapView() {
     }
   }, [searchMode, addDraftVertex, setObserver])
 
-  // Live directional cone preview, recomputed as parameters change.
-  // Only shown in single-point mode.
-  const coneLayer = useMemo(() => {
-    if (searchMode !== 'point' || observerLat == null || observerLng == null) return null
-    const polygon = buildConePolygon(observerLng, observerLat, radiusKm, azimuth, fov)
-    return new GeoJsonLayer({
-      id: 'cone-preview',
-      data: polygon,
-      filled: true,
-      stroked: true,
-      getFillColor: [100, 200, 255, 55],
-      getLineColor: [30, 120, 255, 200],
-      lineWidthMinPixels: 2,
-      pickable: false,
-      // Draw above terrain: interleaved depth-testing against the 3D surface can
-      // occlude flat overlays at certain zooms (they vanish). Disabling the depth
-      // test keeps the cone always visible while panning/zooming.
-      parameters: { depthTest: false },
-    })
+  // Live directional cone preview (native MapLibre layer), recomputed as params change.
+  useEffect(() => {
+    updateCone()
   }, [searchMode, observerLat, observerLng, radiusKm, azimuth, fov])
 
-  // The finalized search area drawn by the user.
-  const searchLayer = useMemo(() => {
-    if (!searchPolygon) return null
-    return new GeoJsonLayer({
-      id: 'search-area',
-      data: searchPolygon,
-      filled: true,
-      stroked: true,
-      getFillColor: [34, 197, 94, 40],
-      getLineColor: [16, 185, 129, 230],
-      lineWidthMinPixels: 2,
-      pickable: false,
-      parameters: { depthTest: false },
-    })
+  // The finalized search area drawn by the user (native MapLibre layer).
+  useEffect(() => {
+    updateSearch()
   }, [searchPolygon])
 
-  // Live draft of vertices while the user is drawing the search area.
-  const draftLayer = useMemo(() => {
-    if (searchMode !== 'area' || draftVertices.length < 2) return null
-    let draftFeature: Feature<Geometry>
-    if (draftVertices.length >= 3) {
-      draftFeature = buildPolygonFeature(draftVertices) as unknown as Feature<Geometry>
-    } else {
-      draftFeature = {
-        type: 'Feature',
-        properties: {},
-        geometry: { type: 'LineString', coordinates: draftVertices },
-      }
-    }
-    return new GeoJsonLayer({
-      id: 'area-draft',
-      data: draftFeature,
-      filled: true,
-      stroked: true,
-      getFillColor: [251, 146, 60, 60],
-      getLineColor: [249, 115, 22, 230],
-      lineWidthMinPixels: 2,
-      pickable: false,
-      parameters: { depthTest: false },
-    })
+  // Live draft of vertices while drawing the search area (native MapLibre layer).
+  useEffect(() => {
+    updateDraft()
   }, [searchMode, draftVertices])
 
-  // Hardware-accelerated single-point viewshed overlay (PNG).
+  // Scored area-search results (native MapLibre circle layer).
+  useEffect(() => {
+    updateResult()
+  }, [resultGeoJSON, legendVisibility])
+
+  // Hardware-accelerated single-point viewshed overlay (PNG). Kept in Deck.gl
+  // because MapLibre has no direct georeferenced-image source for arbitrary bounds.
   const viewshedLayer = useMemo(() => {
     if (!resultImageUrl || !resultBbox) return null
     return new BitmapLayer({
@@ -294,44 +377,9 @@ export default function MapView() {
     })
   }, [resultImageUrl, resultBbox])
 
-  // Area-search result: scored positions rendered as color-coded points.
-  // Colors follow the legend thresholds: green >= 70%, yellow 30-70%, red < 30%.
-  const resultLayer = useMemo(() => {
-    if (!resultGeoJSON?.features.length) return null
-    const data = resultGeoJSON.features.filter((f) => {
-      const s = (f.properties?.score as number | undefined) ?? 0
-      if (s >= 0.7) return legendVisibility.green
-      if (s >= 0.3) return legendVisibility.yellow
-      return legendVisibility.red
-    })
-    return new ScatterplotLayer({
-      id: 'area-result',
-      data,
-      getPosition: (f) =>
-        f.geometry.type === 'Point' ? (f.geometry.coordinates as [number, number]) : [0, 0],
-      getFillColor: (f) => {
-        const s = (f.properties?.score as number | undefined) ?? 0
-        if (s >= 0.7) return [34, 197, 94, 210]
-        if (s >= 0.3) return [234, 179, 8, 210]
-        return [239, 68, 68, 205]
-      },
-      getLineColor: [0, 0, 0, 110],
-      getRadius: 14,
-      radiusUnits: 'pixels',
-      radiusMinPixels: 4,
-      radiusMaxPixels: 22,
-      stroked: true,
-      lineWidthMinPixels: 1,
-      pickable: false,
-    })
-  }, [resultGeoJSON, legendVisibility])
-
   const layers = useMemo(
-    () =>
-      [coneLayer, searchLayer, draftLayer, viewshedLayer, resultLayer].filter(
-        (l): l is NonNullable<typeof l> => l != null,
-      ),
-    [coneLayer, searchLayer, draftLayer, viewshedLayer, resultLayer],
+    () => (viewshedLayer ? [viewshedLayer] : []),
+    [viewshedLayer],
   )
 
   // Push the current layers into the Deck.gl overlay whenever they change.

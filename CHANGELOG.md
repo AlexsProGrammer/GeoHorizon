@@ -13,9 +13,14 @@ Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
   `0` once a point's DEM tile falls out of its cache after panning/zooming. The hover tooltip now
   samples the DEM **directly from the COG** via a new throttled endpoint `GET /api/viewshed/elevation?lng=&lat=`
   (backend `api/viewshed.py`), which is always correct regardless of client tile cache.
-- **Overlay visibility fix:** the cone/search-area/draft Deck.gl layers now render with
-  `depthTest: false`, so they can no longer be occluded by the 3D terrain at certain zoom levels
-  (previously they intermittently disappeared while zooming).
+- **Overlay placement fixed (no parallax / no vanishing):** the interactive geometry
+  overlays — the directional cone, finalized search polygon, live drawing draft, and the
+  scored area-search result points — are now rendered as **native MapLibre vector layers**
+  (`fill`/`line`/`circle` GeoJSON sources) instead of Deck.gl `GeoJsonLayer`/`ScatterplotLayer`.
+  MapLibre drapes native vector layers directly onto the 3D terrain surface, so they stay glued
+  to the ground when panning, pitching and rotating (no parallax/floating) and are never
+  depth-occluded at certain zoom levels (no intermittent disappearing). Only the single-point
+  viewshed PNG image remains a Deck.gl `BitmapLayer`.
 - **Stale tile cache busted:** old buggy-encoded terrain tiles were cached both on disk and in
   the browser (`Cache-Control: max-age=86400`), so viewers kept seeing outdated heights (e.g.
   `-8945`). The disk cache was purged and the `raster-dem` tile URL now carries a `?v=2` cache

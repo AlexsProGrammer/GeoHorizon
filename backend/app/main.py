@@ -1,12 +1,17 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.ingest import router as ingest_router
 from app.api.viewshed import router as viewshed_router
 from app.api.ws import router as ws_router
+
+TILES_DIR = Path("/data/pmtiles")
+TILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run_migrations() -> None:
@@ -23,7 +28,9 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoHorizon API", version="0.1.3", lifespan=lifespan)
+app = FastAPI(title="GeoHorizon API", version="0.1.4", lifespan=lifespan)
+
+app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
 
 app.include_router(ingest_router)
 app.include_router(viewshed_router)

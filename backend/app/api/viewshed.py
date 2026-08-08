@@ -1,11 +1,15 @@
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import rasterio
 import redis
 from celery.result import AsyncResult
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
+from PIL import Image
 from pydantic import BaseModel
 from rasterio.warp import transform_bounds
 
@@ -79,6 +83,50 @@ async def cancel(task_id: str):
         out_path.unlink()
 
     return {"task_id": task_id, "status": "CANCELLED"}
+
+
+@router.get("/result/{task_id}/image")
+async def get_result_image(task_id: str):
+    """Return the viewshed result as a PNG image with bounding box metadata.
+
+    Converts the GeoTIFF visibility raster to a colored PNG:
+    - Visible cells (1) → semi-transparent green
+    - Blocked / outside cone cells (0) → transparent
+
+    The geographical bounds are returned in the ``X-Bounds`` response header
+    (EPSG:4326) so the frontend can anchor the image with Deck.gl's BitmapLayer.
+    """
+    tif_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
+    if not tif_path.exists():
+        raise HTTPException(status_code=404, detail="Result not found")
+
+    with rasterio.open(tif_path) as src:
+        data = src.read(1)
+        if src.crs and src.crs.is_defined:
+            bbox_4326 = list(transform_bounds(src.crs, "EPSG:4326", *src.bounds))
+        else:
+            bbox_4326 = list(src.bounds)
+
+    rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
+    visible_mask = data == 1
+    rgba[visible_mask, 0] = 0     # R
+    rgba[visible_mask, 1] = 200   # G
+    rgba[visible_mask, 2] = 0     # B
+    rgba[visible_mask, 3] = 180   # A (semi-transparent)
+
+    img = Image.fromarray(rgba, "RGBA")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={
+            "X-Bounds": json.dumps(bbox_4326),
+            "X-CRS": "EPSG:4326",
+        },
+    )
 
 
 @router.get("/bounds")

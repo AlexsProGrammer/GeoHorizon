@@ -19,6 +19,14 @@ export type ViewshedStatus =
 
 export type SearchMode = 'point' | 'area'
 
+export type LegendColor = 'green' | 'yellow' | 'red'
+
+export interface LegendVisibility {
+  green: boolean
+  yellow: boolean
+  red: boolean
+}
+
 interface MapState {
   // Observer position (set by map click)
   observerLat: number | null
@@ -38,6 +46,7 @@ interface MapState {
   draftVertices: [number, number][]
   gridStepM: number
   resultGeoJSON: FeatureCollection | null
+  legendVisibility: LegendVisibility
 
   // Available COGs (from /api/viewshed/bounds)
   selectedCog: string | null
@@ -68,6 +77,7 @@ interface MapState {
   clearDraft: () => void
   setGridStep: (m: number) => void
   setResultGeoJSON: (geojson: FeatureCollection | null) => void
+  toggleLegendColor: (color: LegendColor) => void
   setCog: (path: string) => void
   setTaskId: (id: string | null) => void
   setProgress: (progress: number, status: ViewshedStatus, step: string) => void
@@ -94,6 +104,7 @@ export const useMapStore = create<MapState>((set) => ({
   draftVertices: [],
   gridStepM: 50,
   resultGeoJSON: null,
+  legendVisibility: { green: true, yellow: true, red: true },
 
   selectedCog: null,
   availableCogs: [],
@@ -128,6 +139,10 @@ export const useMapStore = create<MapState>((set) => ({
   clearDraft: () => set({ draftVertices: [] }),
   setGridStep: (gridStepM) => set({ gridStepM }),
   setResultGeoJSON: (resultGeoJSON) => set({ resultGeoJSON }),
+  toggleLegendColor: (color) =>
+    set((state) => ({
+      legendVisibility: { ...state.legendVisibility, [color]: !state.legendVisibility[color] },
+    })),
   setCog: (selectedCog) => set({ selectedCog }),
   setTaskId: (taskId) => set({ taskId }),
   setProgress: (progress, status, step) => set({ progress, status, step }),

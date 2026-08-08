@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.7] - 2026-08-08
+Added color-coded results and a toggleable legend for area-search positions:
+- **Frontend:** Area-search scatter results are now colored by sky-visibility score instead of a flat green — green (≥0.70), yellow (0.30–0.70), red (<0.30).
+- **Frontend:** New `Legend` component shown in the sidebar whenever a scored area result is present. Each quality band (Excellent/Moderate/Poor) has a checkbox that toggles whether that color is drawn on the map, isolating just the best spots.
+- **Frontend:** Store gains a `legendVisibility` state + `toggleLegendColor` action; `MapView` filters the rendered scatter features accordingly and colors them per-threshold.
+
 ## [0.1.6] - 2026-08-08
 Added the multi-point area search engine for finding the best viewing positions inside a user-drawn area:
 - **Backend:** New `engine/area_search.py` module. It transforms the WGS84 search polygon into the DEM CRS, crops the DEM window and builds the DSM **once** for the whole area, samples a regular grid of points at a configurable step, runs a WhiteboxTools viewshed from every point, and scores each by sky-visibility ratio (visible cells / cells in the viewing cone).

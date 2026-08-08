@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { Ban, Crosshair, Map as MapIcon, MapPin, Mountain, Play } from 'lucide-react'
 import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
 import { cancelViewshed, startAreaSearch, startViewshed } from '../services/api'
+import Legend from './Legend'
 
 const ACTIVE_STATUSES: ViewshedStatus[] = [
   'STARTED',
@@ -31,6 +32,7 @@ export default function Sidebar() {
   const availableCogs = useMapStore((s) => s.availableCogs)
   const taskId = useMapStore((s) => s.taskId)
   const status = useMapStore((s) => s.status)
+  const resultGeoJSON = useMapStore((s) => s.resultGeoJSON)
 
   const setRadius = useMapStore((s) => s.setRadius)
   const setAzimuth = useMapStore((s) => s.setAzimuth)
@@ -233,6 +235,8 @@ export default function Sidebar() {
           className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800"
         />
       </section>
+
+      {resultGeoJSON && <Legend />}
 
       {isProcessing ? (
         <button

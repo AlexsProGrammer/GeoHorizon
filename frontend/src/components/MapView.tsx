@@ -31,6 +31,7 @@ export default function MapView() {
   const resultImageUrl = useMapStore((s) => s.resultImageUrl)
   const resultBbox = useMapStore((s) => s.resultBbox)
   const resultGeoJSON = useMapStore((s) => s.resultGeoJSON)
+  const legendVisibility = useMapStore((s) => s.legendVisibility)
   const setObserver = useMapStore((s) => s.setObserver)
   const setSearchPolygon = useMapStore((s) => s.setSearchPolygon)
   const addDraftVertex = useMapStore((s) => s.addDraftVertex)
@@ -147,14 +148,27 @@ export default function MapView() {
     })
   }, [resultImageUrl, resultBbox])
 
-  // Area-search result: scored positions rendered as colored points.
+  // Area-search result: scored positions rendered as color-coded points.
+  // Colors follow the legend thresholds: green >= 70%, yellow 30-70%, red < 30%.
   const resultLayer = useMemo(() => {
     if (!resultGeoJSON?.features.length) return null
+    const data = resultGeoJSON.features.filter((f) => {
+      const s = (f.properties?.score as number | undefined) ?? 0
+      if (s >= 0.7) return legendVisibility.green
+      if (s >= 0.3) return legendVisibility.yellow
+      return legendVisibility.red
+    })
     return new ScatterplotLayer({
       id: 'area-result',
-      data: resultGeoJSON.features,
-      getPosition: (f) => (f.geometry.type === 'Point' ? (f.geometry.coordinates as [number, number]) : [0, 0]),
-      getFillColor: [34, 197, 94, 200],
+      data,
+      getPosition: (f) =>
+        f.geometry.type === 'Point' ? (f.geometry.coordinates as [number, number]) : [0, 0],
+      getFillColor: (f) => {
+        const s = (f.properties?.score as number | undefined) ?? 0
+        if (s >= 0.7) return [34, 197, 94, 210]
+        if (s >= 0.3) return [234, 179, 8, 210]
+        return [239, 68, 68, 205]
+      },
       getLineColor: [0, 0, 0, 110],
       getRadius: 14,
       radiusUnits: 'pixels',
@@ -164,7 +178,7 @@ export default function MapView() {
       lineWidthMinPixels: 1,
       pickable: false,
     })
-  }, [resultGeoJSON])
+  }, [resultGeoJSON, legendVisibility])
 
   const layers = useMemo(
     () =>

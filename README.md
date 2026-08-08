@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.6
+Version 0.1.7
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -14,6 +14,7 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 * **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with WhiteboxTools multi-core line-of-sight calculation.
 * **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
 * **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points.
+* **Color-Coded Results & Legend:** Area-search positions are colored green (≥70% sky visibility), yellow (30–70%), or red (<30%), with a toggleable legend in the sidebar so you can isolate just the best spots.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
 * **Windowed COG Reads:** Never loads full regional DEMs into RAM — only the observer's bounding box is read via `rasterio.windows.from_bounds()`.
 * **The "Kill Switch":** True background task termination. Instantly kill runaway CPU tasks via WebSockets if radius or point density parameters are set too high.
@@ -341,6 +342,7 @@ Environment variables live in `.env` (see `.env.example`):
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.7** — Color-coded results: area-search positions are now rendered green (≥70%), yellow (30–70%), or red (<30%) and a toggleable legend in the sidebar lets you show/hide each quality class on the map.
 - **0.1.6** — Area Search (best-position finder): draw a search polygon on the map and the engine scores every sampled grid point by sky-visibility ratio using a single reused DSM. New `/api/viewshed/area-search` + `/api/viewshed/area-result/{task_id}` endpoints, an Analysis Mode toggle (Point/Area), configurable grid step, and a scored-point scatter overlay.
 - **0.1.5** — 360° Panoramic Viewshed: FOV can now be set to 360° for a full circular line-of-sight, alongside the existing directional cone mode. The engine skips the directional mask and produces a symmetric panoramic result; the map preview renders a full circle instead of a wedge.
 - **0.1.4** — Interactive frontend: MapLibre GL + Deck.gl UI with a local PMTiles base map, directional cone preview, real-time progress bars, Kill Switch button, and PNG viewshed result overlay.

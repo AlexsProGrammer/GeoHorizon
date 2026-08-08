@@ -196,6 +196,13 @@ export default function MapView() {
       style: '/style.json',
       center: DEFAULT_CENTER,
       zoom: 12,
+      // Allow the camera to tilt down to a near-ground view. MapLibre's default
+      // maxPitch is 60°, which keeps the view high above the ground; raising it
+      // to the safe maximum (85°) lets you get very close to the terrain without
+      // going below the horizon (which would clip through the ground).
+      maxPitch: 85,
+      maxZoom: 22,
+      minPitch: 0,
     })
     mapRef.current = map
 

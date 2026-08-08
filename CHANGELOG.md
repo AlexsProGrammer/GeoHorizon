@@ -16,6 +16,10 @@ Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
 - **Area "Clear" button fixed:** it previously only cleared the in-progress draft vertices,
   leaving a finalized search polygon on the map (so it appeared to do nothing). It now clears
   both the finalized search polygon and the draft.
+- **3D camera navigation:** raised the map's `maxPitch` from MapLibre's default 60° to the safe
+  maximum 85° (with `maxZoom` 22), so the mouse/touch can tilt down to a near-ground, ground-level
+  view to get very close to the terrain without pitching past the horizon (which would clip
+  through the ground).
 - **Performance (lag fix):** two major sources of map/hover lag removed.
   - The Deck.gl `MapboxOverlay` is now created **lazily** — it is only added to the map when a
     viewshed PNG result is present, and removed otherwise. Previously it rendered into

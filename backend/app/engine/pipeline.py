@@ -6,6 +6,8 @@ WhiteboxTools viewshed -> directional cone mask.
 
 from __future__ import annotations
 
+from typing import Callable
+
 import numpy as np
 import rasterio
 from pyproj import Transformer
@@ -40,12 +42,21 @@ def run_viewshed_pipeline(
     observer_height: float = OBSERVER_HEIGHT_DEFAULT,
     tree_height: float = 30.0,
     building_height: float = 15.0,
+    progress_callback: Callable[[str, int, str], None] | None = None,
 ) -> dict:
     """Run the full viewshed pipeline and return results.
 
     Returns a dict with ``visibility`` (cone-masked binary array), ``transform``,
     ``crs``, ``bbox`` and ``observer``.
+
+    If ``progress_callback`` is provided it is invoked at each pipeline stage as
+    ``progress_callback(status, progress, step)``.
     """
+    def _emit(status: str, progress: int, step: str) -> None:
+        if progress_callback is not None:
+            progress_callback(status, progress, step)
+
+    _emit("FETCHING_DEM", 10, "Extracting elevation window")
     with rasterio.open(cog_path) as src:
         src_crs = src.crs
         pixel_size = abs(src.transform.a)
@@ -60,6 +71,7 @@ def run_viewshed_pipeline(
     bbox_polygon = _to_epsg4326(box(*bbox), crs)
     buildings_gdf, forests_gdf = fetch_obstacles(db_session, bbox_polygon)
 
+    _emit("BUILDING_DSM", 30, "Overlaying obstacles")
     dsm = build_dsm(
         dem_array,
         transform,
@@ -70,6 +82,7 @@ def run_viewshed_pipeline(
         building_height_override=building_height,
     )
 
+    _emit("COMPUTING_VIEWSHED", 60, "Running WhiteboxTools")
     visibility = calculate_viewshed(dsm, transform, crs, (obs_x, obs_y), observer_height)
 
     radius_px = radius_km * 1000.0 / pixel_size
@@ -77,6 +90,8 @@ def run_viewshed_pipeline(
         dem_array.shape, transform, obs_x, obs_y, azimuth, fov, radius_px
     )
     masked = np.where(cone, visibility, 0).astype(np.uint8)
+
+    _emit("APPLYING_CONE", 85, "Applying directional mask")
 
     return {
         "visibility": masked,

@@ -7,19 +7,14 @@ import { useMapStore } from './store/useMapStore'
 export default function App() {
   useTaskWebSocket()
   const status = useMapStore((s) => s.status)
-  const isProcessing =
-    status &&
-    status !== 'IDLE' &&
-    status !== 'SUCCESS' &&
-    status !== 'FAILURE' &&
-    status !== 'CANCELLED'
+  const showProgress = status !== 'IDLE'
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-zinc-100 text-zinc-900">
       <Sidebar />
       <div className="relative flex-1">
         <MapView />
-        {isProcessing && <ProgressBar />}
+        {showProgress && <ProgressBar />}
       </div>
     </div>
   )

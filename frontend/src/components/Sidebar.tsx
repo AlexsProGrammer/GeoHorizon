@@ -35,6 +35,7 @@ export default function Sidebar() {
   const setCog = useMapStore((s) => s.setCog)
   const setTaskId = useMapStore((s) => s.setTaskId)
   const setProgress = useMapStore((s) => s.setProgress)
+  const setError = useMapStore((s) => s.setError)
   const resetTask = useMapStore((s) => s.resetTask)
   const resetResult = useMapStore((s) => s.resetResult)
   const fetchAvailableCogs = useMapStore((s) => s.fetchAvailableCogs)
@@ -50,6 +51,7 @@ export default function Sidebar() {
   async function handleCalculate() {
     if (!canCalculate || observerLat == null || observerLng == null || !selectedCog) return
     resetResult()
+    setError(null)
     setProgress(0, 'STARTED', 'Dispatching task...')
     try {
       const { task_id } = await startViewshed({
@@ -65,7 +67,9 @@ export default function Sidebar() {
       })
       setTaskId(task_id)
     } catch (err) {
-      setProgress(0, 'FAILURE', String(err))
+      setError(err instanceof Error ? err.message : String(err))
+      setProgress(0, 'FAILURE', 'Failed to start calculation')
+      setTaskId(null)
     }
   }
 

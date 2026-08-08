@@ -64,30 +64,35 @@ def run_viewshed_task(self, params: dict):
 
     progress("STARTED", 5, "Starting viewshed pipeline")
 
-    result = None
-    with SessionLocal() as session:
-        result = run_viewshed_pipeline(
-            session,
-            cog_path=params["cog_path"],
-            lat=params["lat"],
-            lng=params["lng"],
-            radius_km=params["radius_km"],
-            azimuth=params["azimuth"],
-            fov=params["fov"],
-            observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
-            tree_height=params.get("tree_height", 30.0),
-            building_height=params.get("building_height", 15.0),
-            progress_callback=progress,
-        )
+    try:
+        with SessionLocal() as session:
+            result = run_viewshed_pipeline(
+                session,
+                cog_path=params["cog_path"],
+                lat=params["lat"],
+                lng=params["lng"],
+                radius_km=params["radius_km"],
+                azimuth=params["azimuth"],
+                fov=params["fov"],
+                observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
+                tree_height=params.get("tree_height", 30.0),
+                building_height=params.get("building_height", 15.0),
+                progress_callback=progress,
+            )
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
-    _write_geotiff(str(out_path), result["visibility"], result["transform"], result["crs"])
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
+        _write_geotiff(str(out_path), result["visibility"], result["transform"], result["crs"])
 
-    progress("SUCCESS", 100, "Complete")
+        progress("SUCCESS", 100, "Complete")
 
-    return {
-        "viewshed_path": str(out_path),
-        "bbox": list(result["bbox"]),
-        "crs": result["crs"].to_string(),
-    }
+        return {
+            "viewshed_path": str(out_path),
+            "bbox": list(result["bbox"]),
+            "crs": result["crs"].to_string(),
+        }
+    except Exception as exc:
+        # Notify the frontend immediately so it can show the error and stop,
+        # then re-raise so Celery still records the task as failed.
+        progress("FAILURE", 0, f"Calculation failed: {exc}")
+        raise

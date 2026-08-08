@@ -35,6 +35,7 @@ interface MapState {
   progress: number
   status: ViewshedStatus
   step: string
+  errorMessage: string | null
 
   // Result (PNG overlay + its geographic bounding box)
   resultImageUrl: string | null
@@ -51,6 +52,7 @@ interface MapState {
   setCog: (path: string) => void
   setTaskId: (id: string | null) => void
   setProgress: (progress: number, status: ViewshedStatus, step: string) => void
+  setError: (message: string | null) => void
   setResult: (imageUrl: string, bbox: [number, number, number, number]) => void
   resetTask: () => void
   resetResult: () => void
@@ -75,6 +77,7 @@ export const useMapStore = create<MapState>((set) => ({
   progress: 0,
   status: 'IDLE',
   step: '',
+  errorMessage: null,
 
   resultImageUrl: null,
   resultBbox: null,
@@ -89,6 +92,7 @@ export const useMapStore = create<MapState>((set) => ({
   setCog: (selectedCog) => set({ selectedCog }),
   setTaskId: (taskId) => set({ taskId }),
   setProgress: (progress, status, step) => set({ progress, status, step }),
+  setError: (errorMessage) => set({ errorMessage }),
   setResult: (resultImageUrl, resultBbox) =>
     set((state) => {
       if (state.resultImageUrl && state.resultImageUrl !== resultImageUrl) {
@@ -96,7 +100,8 @@ export const useMapStore = create<MapState>((set) => ({
       }
       return { resultImageUrl, resultBbox }
     }),
-  resetTask: () => set({ taskId: null, progress: 0, status: 'IDLE', step: '' }),
+  resetTask: () =>
+    set({ taskId: null, progress: 0, status: 'IDLE', step: '', errorMessage: null }),
   resetResult: () =>
     set((state) => {
       if (state.resultImageUrl) {

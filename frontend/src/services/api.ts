@@ -44,6 +44,18 @@ export async function cancelViewshed(taskId: string): Promise<void> {
   await fetch(`${API_BASE}/viewshed/cancel/${taskId}`, { method: 'POST' })
 }
 
+export interface TaskStatus {
+  state: string
+  error: string | null
+}
+
+/** Poll the current Celery state of a task (e.g. PENDING / STARTED / SUCCESS / FAILURE / REVOKED). */
+export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
+  const res = await fetch(`${API_BASE}/viewshed/status/${taskId}`)
+  if (!res.ok) throw new Error(`Failed to fetch task status: ${res.status}`)
+  return (await res.json()) as TaskStatus
+}
+
 export function getResultImageUrl(taskId: string): string {
   return `${API_BASE}/viewshed/result/${taskId}/image`
 }

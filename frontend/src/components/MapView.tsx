@@ -199,16 +199,10 @@ export default function MapView() {
     })
     mapRef.current = map
 
-    // Share the depth buffer with MapLibre terrain (fixes z-fighting between
-    // the overlay layers and the 3D surface) and apply transparent blending.
-    // interleaved:true keeps Deck.gl in MapLibre's 3D scene, so the cone/polygon
-    // stay glued to the terrain (no parallax / floating) when panning & rotating.
-    const overlay = new MapboxOverlay({
-      interleaved: true,
-      parameters: { depthTest: true, blend: true },
-    })
-    overlayRef.current = overlay
-    map.addControl(overlay)
+    // NOTE: The Deck.gl MapboxOverlay is created LAZILY only when a viewshed PNG
+    // result is present (see the `layers` effect). With `interleaved: true` it
+    // renders into MapLibre's GL loop on every frame, which is a per-frame cost
+    // even with zero layers — so we avoid it entirely unless a result needs it.
 
     // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
     map.on('load', () => {
@@ -276,11 +270,11 @@ export default function MapView() {
     })
 
     // Mouse hover: capture coordinates, OSM features and elevation.
-    // Position/x/y update cheaply & instantly for a responsive tooltip, but the
-    // expensive rendered-feature query (queryRenderedFeatures + collectHoverFeatures)
-    // and the backend elevation fetch are THROTTLED (~120ms). queryRenderedFeatures
-    // running on every mousemove (60+ Hz during a drag) blocks the main thread and
-    // makes the camera and tooltip laggy, so we bound its frequency.
+    // Position/x/y update cheaply & instantly so the tooltip follows the cursor,
+    // but the expensive work (queryRenderedFeatures + elevation fetch) is:
+    //   (1) SKIPPED entirely while the camera is panning/zooming/rotating, so it
+    //       can never block camera movement, and
+    //   (2) THROTTLED (~150ms) when hovering still.
     const onMove = (e: maplibregl.MapMouseEvent) => {
       const lng = e.lngLat.lng
       const lat = e.lngLat.lat
@@ -298,8 +292,11 @@ export default function MapView() {
         y,
       })
 
+      // Don't run expensive queries while the camera is moving (drag/zoom/rotate).
+      if (map.isMoving() || map.isZooming() || map.isRotating()) return
+
       const now = performance.now()
-      if (now - lastExpensiveRef.current < 120) return
+      if (now - lastExpensiveRef.current < 150) return
       lastExpensiveRef.current = now
       const token = ++expensiveTokenRef.current
 
@@ -398,9 +395,29 @@ export default function MapView() {
   )
 
   // Push the current layers into the Deck.gl overlay whenever they change.
+  // The overlay is created lazily (only when a viewshed PNG exists) and removed
+  // when it doesn't, so the interleaved Deck.gl render pass is NOT active during
+  // every map frame — this removes a major source of camera/map lag.
   useEffect(() => {
-    overlayRef.current?.setProps({ layers })
-  }, [layers])
+    const map = mapRef.current
+    if (!map) return
+
+    if (viewshedLayer) {
+      if (!overlayRef.current) {
+        const overlay = new MapboxOverlay({
+          interleaved: true,
+          parameters: { depthTest: true, blend: true },
+        })
+        overlayRef.current = overlay
+        map.addControl(overlay)
+      }
+      overlayRef.current.setProps({ layers })
+    } else if (overlayRef.current) {
+      map.removeControl(overlayRef.current)
+      ;(overlayRef.current as unknown as { finalize?: () => void }).finalize?.()
+      overlayRef.current = null
+    }
+  }, [viewshedLayer, layers])
 
   function finishArea() {
     if (draftVertices.length < 3) return

@@ -16,11 +16,15 @@ Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
 - **Area "Clear" button fixed:** it previously only cleared the in-progress draft vertices,
   leaving a finalized search polygon on the map (so it appeared to do nothing). It now clears
   both the finalized search polygon and the draft.
-- **Performance (lag fix):** the hover handler no longer runs the expensive
-  `map.queryRenderedFeatures()` + backend elevation fetch on every mousemove (60+ Hz during a
-  pan/rotate), which was blocking the main thread and making the camera and hover laggy. Both
-  are now throttled to ~120 ms, while the tooltip position updates instantly so it still
-  follows the cursor smoothly.
+- **Performance (lag fix):** two major sources of map/hover lag removed.
+  - The Deck.gl `MapboxOverlay` is now created **lazily** — it is only added to the map when a
+    viewshed PNG result is present, and removed otherwise. Previously it rendered into
+    MapLibre's GL loop on every frame even with zero layers, a significant per-frame cost that
+    made camera movement janky.
+  - The hover handler now **skips** the expensive `queryRenderedFeatures()` + elevation fetch
+    entirely while the camera is panning/zooming/rotating (so it can never block movement), and
+    throttles them to ~150 ms when hovering still. Position updates stay instant so the tooltip
+    still tracks the cursor smoothly.
 - **Overlay placement fixed (no parallax / no vanishing):** the interactive geometry
   overlays — the directional cone, finalized search polygon, live drawing draft, and the
   scored area-search result points — are now rendered as **native MapLibre vector layers**

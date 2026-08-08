@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.2
+Version 0.1.3
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -197,7 +197,8 @@ Dispatches a viewshed calculation as a Celery task.
   "fov": 40,
   "observer_height": 1.8,
   "tree_height": 30.0,
-  "building_height": 15.0
+  "building_height": 15.0,
+  "point_density": null
 }
 ```
 
@@ -205,6 +206,41 @@ Dispatches a viewshed calculation as a Celery task.
 
 ### `GET /api/viewshed/status/{task_id}`
 Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
+
+### `GET /api/viewshed/bounds`
+Lists all processed COGs in `/data/processed/` with their spatial metadata, so the frontend knows valid calculation boundaries.
+
+**Response:**
+```json
+{
+  "cogs": [
+    {
+      "name": "elevation_cog.tif",
+      "path": "/data/processed/elevation_cog.tif",
+      "crs": "EPSG:25832",
+      "extent": [754000.0, 5289000.0, 798000.0, 5332000.0],
+      "extent_epsg4326": [12.61, 47.62, 13.41, 48.12],
+      "pixel_size_m": 5.0,
+      "shape": [8600, 8800],
+      "nodata": null
+    }
+  ]
+}
+```
+
+### `POST /api/viewshed/cancel/{task_id}`
+The **Kill Switch**. Hard-terminates a running viewshed task by revoking the Celery process with `SIGKILL`, so heavy native computation (WhiteboxTools / GDAL) stops instantly.
+
+**Response:** `{ "task_id": "8e3f…", "status": "CANCELLED" }`
+
+### `WS /ws/progress/{task_id}`
+Connect for real-time progress of a viewshed task. The server subscribes to the Redis channel `task_progress:{task_id}` and forwards each update verbatim as JSON text:
+
+```json
+{ "task_id": "8e3f…", "status": "BUILDING_DSM", "progress": 30, "step": "Overlaying obstacles" }
+```
+
+The first frame is always `{ "status": "CONNECTED", "progress": 0 }`; a cancellation arrives as `{ "status": "CANCELLED", "progress": 0, "message": "Task killed by user" }`.
 
 ## 📦 Configuration
 
@@ -223,13 +259,15 @@ Environment variables live in `.env` (see `.env.example`):
 ## 🗺️ Roadmap
 
 - **Part 2 (done):** Automated data ingestion — COG conversion + OSM → PostGIS pipeline.
-- **Part 3 (current):** Viewshed & Line-of-Sight math engine (Rasterio / NumPy / WhiteboxTools) reading from PostGIS with GiST-indexed queries.
-- **Part 4:** Frontend rendering — MapLibre GL JS + Deck.gl overlay of viewshed results.
+- **Part 3 (done):** Viewshed & Line-of-Sight math engine (Rasterio / NumPy / WhiteboxTools) reading from PostGIS with GiST-indexed queries.
+- **Part 4 (done):** Real-time task progress via WebSocket (`/ws/progress/{task_id}`), hard Kill Switch (`/api/viewshed/cancel/{task_id}`), and COG bounds endpoint.
+- **Part 5:** Frontend rendering — MapLibre GL JS + Deck.gl overlay of viewshed results with progress bars and cancel button.
 
 ## 📝 Changelog
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.3** — Real-time progress via WebSockets, hard Kill Switch (SIGKILL revoke), COG bounds endpoint, tuned Celery config.
 - **0.1.2** — Viewshed engine: COG windowed reads, DSM builder with PostGIS obstacle overlay, directional cone filter, WhiteboxTools viewshed, and a Celery-backed pipeline (`/api/viewshed`).
 - **0.1.1** — Automated data ingestion pipeline: GDAL/GIS dependencies, PostGIS models, COG + OSM ingestion tasks, and `/api/ingest` endpoints.
 - **0.0.1** — Project initialization with Dockerized FastAPI, Celery, PostgreSQL/PostGIS, and a React/MapLibre frontend.

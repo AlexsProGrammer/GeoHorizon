@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoHorizon API", version="0.1.2", lifespan=lifespan)
+app = FastAPI(title="GeoHorizon API", version="0.1.3", lifespan=lifespan)
 
 app.include_router(ingest_router)
 app.include_router(viewshed_router)

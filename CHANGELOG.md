@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.3] - 2026-08-08
+Implemented real-time task progress and a hard Kill Switch (Part 4):
+- WebSocket endpoint `/ws/progress/{task_id}` streaming Redis Pub/Sub progress frames to the frontend in real time.
+- Hard "Kill Switch" endpoint `POST /api/viewshed/cancel/{task_id}` revoking the Celery process with `SIGKILL` to instantly stop runaway CPU calculations.
+- COG bounds endpoint `GET /api/viewshed/bounds` exposing spatial extent, CRS, and resolution of processed COGs for frontend map configuration.
+- Celery configuration tuned for reliability: `task_track_started`, `result_expires=3600`, and `worker_prefetch_multiplier=1`.
+- Viewshed pipeline now publishes stage-by-stage progress (FETCHING_DEM → BUILDING_DSM → COMPUTING_VIEWSHED → APPLYING_CONE → SUCCESS) via Redis.
+- Added optional `point_density` field to the viewshed request model for future use.
+
 ## [0.1.2] - 2026-08-08
 Implemented the core geospatial viewshed engine (Part 3):
 - COG windowed read extraction via bounding box (never loads full DEMs into RAM).

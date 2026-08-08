@@ -77,8 +77,8 @@ geo-horizon/
 
 ## Setup Data
 
-- Get .osm.pbf files from [Geofabrik](https://download.geofabrik.de/) and elevation data from [OpenTopography](https://opentopography.org/). Place them in `/data/import/` for ingestion.
-- Get .tif/.vrt/.xyz/.meta4 files from [OpenTopography](https://opentopography.org/), [USGS EarthExplorer](https://earthexplorer.usgs.gov/) or [Coverage Map](https://viewfinderpanoramas.org/Coverage%20map%20viewfinderpanoramas_org1.htm). Place them in `/data/import/` for ingestion.
+- Get .pbf files from [Geofabrik](https://download.geofabrik.de/) or [OpenStreetMap Extracts](https://extract.bbbike.org/). Place in `/data/import/` for ingestion.
+- Get .tif/.vrt/.xyz/.meta4 files from [OpenTopography](https://opentopography.org/), [USGS EarthExplorer](https://earthexplorer.usgs.gov/) or [Coverage Map](https://viewfinderpanoramas.org/Coverage%20map%20viewfinderpanoramas_org1.htm). Place in `/data/import/` for ingestion.
 
   If you get a .vrt/.xyz/.meta4 file:
 ```bash

@@ -10,4 +10,11 @@ rio-cogeo
 pyrosm
 geopandas
 shapely
+pyproj
+scipy
+whitebox
 alembic
+
+# Testing
+pytest
+pytest-cov

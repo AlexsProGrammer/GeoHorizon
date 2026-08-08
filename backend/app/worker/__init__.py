@@ -8,7 +8,7 @@ celery_app = Celery(
     "geohorizon",
     broker=broker_url,
     backend=result_backend,
-    include=["app.worker.ingestion_tasks"],
+    include=["app.worker.ingestion_tasks", "app.worker.viewshed_tasks"],
 )
 
 celery_app.conf.update(

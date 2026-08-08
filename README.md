@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.1
+Version 0.1.2
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -11,8 +11,10 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 
 ## ✨ Core Features
 * **Automated Data Pipeline:** Drop raw `.vrt`/GeoTIFF and OpenStreetMap `.pbf` files into a mapped folder, and the backend automatically converts them into Cloud Optimized GeoTIFFs (COGs) and PostGIS tables.
+* **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with WhiteboxTools multi-core line-of-sight calculation.
 * **Directional Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
+* **Windowed COG Reads:** Never loads full regional DEMs into RAM — only the observer's bounding box is read via `rasterio.windows.from_bounds()`.
 * **The "Kill Switch":** True background task termination. Instantly kill runaway CPU tasks via WebSockets if radius or point density parameters are set too high.
 * **100% DSGVO / GDPR Compliant:** Air-gapped capable. Uses local PMTiles for base maps and self-hosted fonts. No telemetry, no Google/Mapbox API calls.
 
@@ -59,9 +61,15 @@ geo-horizon/
 │       │   ├── __init__.py
 │       │   └── gis.py        # Building & Forest PostGIS models
 │       ├── engine/           # GIS Math: Rasterio, NumPy, WhiteboxTools (Part 3)
+│       │   ├── __init__.py
+│       │   ├── dsm_builder.py   # COG extraction & obstacle height matrix addition
+│       │   ├── cone_filter.py   # Spatial azimuth & FOV cone calculation
+│       │   ├── viewshed.py      # WhiteboxTools viewshed execution wrapper
+│       │   └── pipeline.py     # Main execution coordinator function
 │       └── worker/
 │           ├── __init__.py   # Celery app config
-│           └── ingestion_tasks.py  # Raster (COG) & Vector (PostGIS) tasks
+│           ├── ingestion_tasks.py  # Raster (COG) & Vector (PostGIS) tasks
+│           └── viewshed_tasks.py   # Viewshed pipeline background task
 │
 └── frontend/                # React & MapLibre UI
     ├── Dockerfile
@@ -163,6 +171,41 @@ Returns the current state of a started task.
 
 Interactive documentation (OpenAPI) is available at `/docs` and `/redoc`.
 
+## 🔭 Viewshed Engine
+
+The viewshed engine (`backend/app/engine/`) computes high-accuracy line-of-sight maps from the ingested COGs and PostGIS obstacle data:
+
+1. **Bounding Box** — `get_bounding_box(lat, lng, radius_km, src_crs)` transforms the observer from WGS84 (EPSG:4326) into the DEM's projected CRS via `pyproj` and derives a square coverage box.
+2. **COG Window Read** — `crop_dem_window(cog_path, bbox)` reads only the needed elevation window with `rasterio.windows.from_bounds()`, keeping RAM usage constant regardless of DEM size.
+3. **Obstacle Overlay** — `fetch_obstacles(db, bbox)` runs `ST_Intersects` queries against the `buildings` and `forests` tables; `build_dsm(...)` rasterizes them into height masks and adds them to the DEM: `dsm = dem + tree_mask + building_mask`.
+4. **Viewshed** — `calculate_viewshed(dsm, ...)` exports the DSM as a temporary GeoTIFF, runs WhiteboxTools' multi-core `viewshed`, and reads back the binary visibility raster (1 = visible, 0 = blocked).
+5. **Directional Cone** — `create_directional_mask(...)` keeps only cells inside the `[azimuth ± FOV/2]` wedge and within the radius, cutting computation dramatically vs. a 360° sweep.
+
+The full flow is orchestrated by `run_viewshed_pipeline(...)` in `pipeline.py` and executed in the background as a Celery task.
+
+### `POST /api/viewshed/start`
+Dispatches a viewshed calculation as a Celery task.
+
+**Request body:**
+```json
+{
+  "cog_path": "/data/processed/elevation_cog.tif",
+  "lat": 43.731,
+  "lng": 7.419,
+  "radius_km": 5.0,
+  "azimuth": 270,
+  "fov": 40,
+  "observer_height": 1.8,
+  "tree_height": 30.0,
+  "building_height": 15.0
+}
+```
+
+**Response:** `{ "task_id": "8e3f…" }`
+
+### `GET /api/viewshed/status/{task_id}`
+Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
+
 ## 📦 Configuration
 
 Environment variables live in `.env` (see `.env.example`):
@@ -179,12 +222,14 @@ Environment variables live in `.env` (see `.env.example`):
 
 ## 🗺️ Roadmap
 
-- **Part 2 (current):** Automated data ingestion — COG conversion + OSM → PostGIS pipeline.
-- **Part 3:** Viewshed & Line-of-Sight math engine (Rasterio / NumPy / WhiteboxTools) reading from PostGIS with GiST-indexed queries.
+- **Part 2 (done):** Automated data ingestion — COG conversion + OSM → PostGIS pipeline.
+- **Part 3 (current):** Viewshed & Line-of-Sight math engine (Rasterio / NumPy / WhiteboxTools) reading from PostGIS with GiST-indexed queries.
+- **Part 4:** Frontend rendering — MapLibre GL JS + Deck.gl overlay of viewshed results.
 
 ## 📝 Changelog
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.2** — Viewshed engine: COG windowed reads, DSM builder with PostGIS obstacle overlay, directional cone filter, WhiteboxTools viewshed, and a Celery-backed pipeline (`/api/viewshed`).
 - **0.1.1** — Automated data ingestion pipeline: GDAL/GIS dependencies, PostGIS models, COG + OSM ingestion tasks, and `/api/ingest` endpoints.
 - **0.0.1** — Project initialization with Dockerized FastAPI, Celery, PostgreSQL/PostGIS, and a React/MapLibre frontend.

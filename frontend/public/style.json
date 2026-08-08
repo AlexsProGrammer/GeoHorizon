@@ -4,7 +4,7 @@
   "sources": {
     "basemap": {
       "type": "vector",
-      "url": "pmtiles://http://localhost:8000/tiles/basemap.pmtiles",
+      "url": "pmtiles://http://localhost:3002/tiles/basemap.pmtiles",
       "attribution": "OpenStreetMap contributors"
     }
   },

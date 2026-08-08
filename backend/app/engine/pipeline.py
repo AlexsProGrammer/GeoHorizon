@@ -10,7 +10,7 @@ from typing import Callable
 
 import numpy as np
 import rasterio
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from shapely.geometry import box
 from shapely.ops import transform as shp_transform
 
@@ -24,6 +24,21 @@ from app.engine.dsm_builder import (
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
 
 __all__ = ["run_viewshed_pipeline"]
+
+# The bundled Bavarian DEM (DGM) is a Cloud Optimized GeoTIFF in
+# ETRS89 / UTM zone 32N. The merged source raster was created without an
+# embedded CRS, so we fall back to this when the GeoTIFF declares none.
+FALLBACK_CRS_EPSG = 25832
+
+
+def _resolve_crs(crs) -> CRS:
+    """Return ``crs`` if it is a valid pyproj CRS, else the configured fallback."""
+    if crs is not None:
+        try:
+            return CRS.from_user_input(crs)
+        except Exception:
+            pass
+    return CRS.from_epsg(FALLBACK_CRS_EPSG)
 
 
 def _to_epsg4326(polygon, src_crs):
@@ -61,8 +76,13 @@ def run_viewshed_pipeline(
         src_crs = src.crs
         pixel_size = abs(src.transform.a)
 
+    # The COG may lack an embedded CRS (see FALLBACK_CRS_EPSG); resolve it so
+    # the transformer and reprojections below never receive an empty CRS.
+    src_crs = _resolve_crs(src_crs)
+
     bbox = get_bounding_box(lat, lng, radius_km, src_crs)
     dem_array, transform, crs = crop_dem_window(cog_path, bbox)
+    crs = _resolve_crs(crs)
 
     # Observer position in the DEM's native CRS.
     transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)

@@ -102,7 +102,7 @@ async def get_result_image(task_id: str):
 
     with rasterio.open(tif_path) as src:
         data = src.read(1)
-        if src.crs and src.crs.is_defined:
+        if src.crs:
             bbox_4326 = list(transform_bounds(src.crs, "EPSG:4326", *src.bounds))
         else:
             bbox_4326 = list(src.bounds)
@@ -148,7 +148,7 @@ async def bounds():
                         "shape": [src.height, src.width],
                         "nodata": src.nodata,
                     }
-                    if src.crs and src.crs.is_defined:
+                    if src.crs:
                         try:
                             entry["extent_epsg4326"] = list(
                                 transform_bounds(src.crs, "EPSG:4326", *src.bounds)

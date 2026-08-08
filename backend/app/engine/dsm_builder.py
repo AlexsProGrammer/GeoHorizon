@@ -11,7 +11,7 @@ from typing import Any
 import geopandas as gpd
 import numpy as np
 import rasterio
-from pyproj import Transformer
+from pyproj import CRS, Transformer
 from rasterio import features
 from rasterio.windows import Window, from_bounds, transform
 
@@ -25,13 +25,20 @@ __all__ = [
 FOREST_DEFAULT_HEIGHT = 30.0
 BUILDING_DEFAULT_HEIGHT = 15.0
 
+# Fallback projected CRS when a DEM sources declares no coordinate system.
+# The bundled Bavarian DEM is ETRS89 / UTM zone 32N.
+FALLBACK_CRS_EPSG = 25832
+
 
 def get_bounding_box(lat: float, lng: float, radius_km: float, src_crs) -> tuple:
     """Return a square (minx, miny, maxx, maxy) bounding box of 2*radius side.
 
     The observer coordinate is given in WGS84 (EPSG:4326) and is transformed
-    into the DEM's native projected CRS before deriving the box.
+    into the DEM's native projected CRS before deriving the box. If ``src_crs``
+    is missing/empty the configured fallback (EPSG:25832) is used.
     """
+    if src_crs is None:
+        src_crs = CRS.from_epsg(FALLBACK_CRS_EPSG)
     transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
     x, y = transformer.transform(lng, lat)
     half = radius_km * 1000.0
@@ -58,13 +65,20 @@ def fetch_obstacles(db_session, bbox_polygon) -> tuple[gpd.GeoDataFrame, gpd.Geo
     wkt = getattr(bbox_polygon, "wkt", str(bbox_polygon))
     bind = db_session.get_bind()
 
+    # NOTE on the two SQL details below:
+    #  - geopandas.read_postgis parses the geometry column with
+    #    ``shapely.wkb.loads(..., hex=True)``, i.e. it expects EWKB encoded as
+    #    hex text, NOT human-readable WKT. Hence ST_AsHexEWKB(geom).
+    #  - read_postgis passes ``params`` straight to psycopg2 (via
+    #    ``exec_driver_sql``), which uses pyformat placeholders (``%(name)s``),
+    #    not SQLAlchemy's ``:name`` syntax.
     buildings_sql = (
-        "SELECT id, name, estimated_height, ST_AsText(geom) AS geom "
-        "FROM buildings WHERE ST_Intersects(geom, ST_GeomFromText(:wkt, 4326))"
+        "SELECT id, name, estimated_height, ST_AsHexEWKB(geom) AS geom "
+        "FROM buildings WHERE ST_Intersects(geom, ST_GeomFromText(%(wkt)s, 4326))"
     )
     forests_sql = (
-        "SELECT id, name, estimated_height, ST_AsText(geom) AS geom "
-        "FROM forests WHERE ST_Intersects(geom, ST_GeomFromText(:wkt, 4326))"
+        "SELECT id, name, estimated_height, ST_AsHexEWKB(geom) AS geom "
+        "FROM forests WHERE ST_Intersects(geom, ST_GeomFromText(%(wkt)s, 4326))"
     )
 
     buildings_gdf = gpd.read_postgis(

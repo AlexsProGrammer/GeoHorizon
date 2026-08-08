@@ -122,7 +122,15 @@ export default function Sidebar() {
 
       <Slider label="Radius" value={radiusKm} display={`${radiusKm} km`} min={1} max={50} step={1} onChange={setRadius} />
       <Slider label="Azimuth" value={azimuth} display={`${azimuth}°`} min={0} max={359} step={1} onChange={setAzimuth} />
-      <Slider label="Field of View" value={fov} display={`${fov}°`} min={10} max={360} step={5} onChange={setFov} />
+      <Slider
+        label={fov >= 360 ? 'Field of View (Panoramic)' : 'Field of View'}
+        value={fov}
+        display={fov >= 360 ? '360° (full)' : `${fov}°`}
+        min={10}
+        max={360}
+        step={5}
+        onChange={setFov}
+      />
       <Slider label="Tree Offset" value={treeOffset} display={`${treeOffset} m`} min={0} max={100} step={1} onChange={setTreeOffset} />
       <Slider label="Building Offset" value={buildingOffset} display={`${buildingOffset} m`} min={0} max={100} step={1} onChange={setBuildingOffset} />
 

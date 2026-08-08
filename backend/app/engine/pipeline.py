@@ -106,12 +106,19 @@ def run_viewshed_pipeline(
     visibility = calculate_viewshed(dsm, transform, crs, (obs_x, obs_y), observer_height)
 
     radius_px = radius_km * 1000.0 / pixel_size
+    # A 360° panoramic viewshed is a full circle: no directional wedge is
+    # applied, so relax the FOV back to 360 to keep the whole radius visible.
+    effective_fov = 360.0 if fov >= 360.0 else fov
     cone = create_directional_mask(
-        dem_array.shape, transform, obs_x, obs_y, azimuth, fov, radius_px
+        dem_array.shape, transform, obs_x, obs_y, azimuth, effective_fov, radius_px
     )
     masked = np.where(cone, visibility, 0).astype(np.uint8)
 
-    _emit("APPLYING_CONE", 85, "Applying directional mask")
+    _emit(
+        "APPLYING_CONE",
+        85,
+        "Applying directional mask" if effective_fov < 360.0 else "Applying panoramic mask",
+    )
 
     return {
         "visibility": masked,

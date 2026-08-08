@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="GeoHorizon API", version="0.1.4", lifespan=lifespan)
+app = FastAPI(title="GeoHorizon API", version="0.1.5", lifespan=lifespan)
 
 app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
 

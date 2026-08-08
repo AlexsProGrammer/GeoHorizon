@@ -19,12 +19,15 @@ export function buildConePolygon(
   const metersPerDegLat = 111320
   const metersPerDegLng = 111320 * Math.cos((lat * Math.PI) / 180)
 
-  const startAngle = azimuth - fov / 2
-  const endAngle = azimuth + fov / 2
+  // A 360° (panoramic) view sweeps the full circle; center the sweep on North
+  // so the polygon closes cleanly regardless of the stored azimuth.
+  const isPanoramic = fov >= 360
+  const sweepFrom = isPanoramic ? -180 : azimuth - fov / 2
+  const sweepTo = isPanoramic ? 180 : azimuth + fov / 2
 
   const coords: [number, number][] = [[lng, lat]]
   for (let i = 0; i <= numPoints; i++) {
-    const angle = startAngle + ((endAngle - startAngle) * i) / numPoints
+    const angle = sweepFrom + ((sweepTo - sweepFrom) * i) / numPoints
     const rad = (angle * Math.PI) / 180
     const dx = Math.sin(rad) * radiusMeters
     const dy = Math.cos(rad) * radiusMeters

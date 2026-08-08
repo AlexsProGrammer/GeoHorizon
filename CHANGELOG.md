@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.5] - 2026-08-08
+Added 360° panoramic viewshed support on top of the existing directional cone mode:
+- **Backend:** The viewshed pipeline now treats `fov >= 360` as a full panoramic sweep. It skips the directional wedge and applies a simple circular radius mask instead, producing a symmetric 360° line-of-sight result. Directional cone behaviour is unchanged for `fov < 360`.
+- **Tests:** Added `test_pipeline_panoramic_mask_is_circular` verifying the 360° output is a full circle with no directional bias.
+- **Frontend:** FOV slider now spans up to 360°. At 360° the label switches to "Field of View (Panoramic)" and the live map preview renders a full circle polygon instead of a wedge (`buildConePolygon` handles the panoramic sweep).
+
 ## [0.1.4] - 2026-08-08
 Implemented the interactive frontend UI for viewshed visualization (Part 5):
 - MapLibre GL JS base map with local PMTiles support for DSGVO-compliant offline rendering.

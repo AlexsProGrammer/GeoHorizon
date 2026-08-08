@@ -64,3 +64,41 @@ def test_pipeline_returns_masked_visibility(tmp_path, monkeypatch):
     assert "transform" in result and "crs" in result and "bbox" in result
     # East-west asymmetry: east half has more visible cells than west half.
     assert vis[:, 50:].sum() > vis[:, :50].sum()
+
+
+def test_pipeline_panoramic_mask_is_circular(tmp_path, monkeypatch):
+    """A fov>=360 viewshed keeps the full circular area, no directional wedge."""
+    cog = tmp_path / "cog.tif"
+    _make_cog(cog)
+
+    empty_gdf = gpd.GeoDataFrame(geometry=[])
+
+    monkeypatch.setattr(pipeline, "fetch_obstacles", lambda *a, **k: (empty_gdf, empty_gdf))
+    monkeypatch.setattr(
+        pipeline, "calculate_viewshed",
+        lambda dsm, transform, crs, obs, height: np.ones(dsm.shape, dtype=np.uint8),
+    )
+
+    lng, lat = _observer_latlng()
+    result = run_viewshed_pipeline(
+        db_session=None,
+        cog_path=str(cog),
+        lat=lat,
+        lng=lng,
+        radius_km=0.05,
+        azimuth=90.0,
+        fov=360.0,
+    )
+
+    vis = result["visibility"]
+    assert vis.shape == (100, 100)
+    # Everything visible AND inside the circular radius stays 1.
+    assert vis.max() == 1 and vis.min() == 0
+    # A full circle: the corners (outside the radius) are masked off.
+    assert vis[0, 0] == 0 and vis[-1, 0] == 0 and vis[0, -1] == 0 and vis[-1, -1] == 0
+    # Center is within the radius and therefore visible.
+    assert vis[50, 50] == 1
+    # Full circle, no directional bias: east/west halves match within tolerance.
+    left = vis[:, :50].sum()
+    right = vis[:, 50:].sum()
+    assert abs(left - right) <= 0.05 * max(left, right)

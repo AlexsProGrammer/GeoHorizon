@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.4
+Version 0.1.5
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -12,7 +12,7 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 ## ✨ Core Features
 * **Automated Data Pipeline:** Drop raw `.vrt`/GeoTIFF and OpenStreetMap `.pbf` files into a mapped folder, and the backend automatically converts them into Cloud Optimized GeoTIFFs (COGs) and PostGIS tables.
 * **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with WhiteboxTools multi-core line-of-sight calculation.
-* **Directional Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster.
+* **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
 * **Windowed COG Reads:** Never loads full regional DEMs into RAM — only the observer's bounding box is read via `rasterio.windows.from_bounds()`.
 * **The "Kill Switch":** True background task termination. Instantly kill runaway CPU tasks via WebSockets if radius or point density parameters are set too high.
@@ -301,6 +301,7 @@ Environment variables live in `.env` (see `.env.example`):
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.5** — 360° Panoramic Viewshed: FOV can now be set to 360° for a full circular line-of-sight, alongside the existing directional cone mode. The engine skips the directional mask and produces a symmetric panoramic result; the map preview renders a full circle instead of a wedge.
 - **0.1.4** — Interactive frontend: MapLibre GL + Deck.gl UI with a local PMTiles base map, directional cone preview, real-time progress bars, Kill Switch button, and PNG viewshed result overlay.
 - **0.1.3** — Real-time progress via WebSockets, hard Kill Switch (SIGKILL revoke), COG bounds endpoint, tuned Celery config.
 - **0.1.2** — Viewshed engine: COG windowed reads, DSM builder with PostGIS obstacle overlay, directional cone filter, WhiteboxTools viewshed, and a Celery-backed pipeline (`/api/viewshed`).

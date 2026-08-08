@@ -107,8 +107,8 @@ export default function MapView() {
     y: number
   } | null>(null)
   const elevRef = useRef<number | null>(null)
-  const lastElevFetchRef = useRef(0)
-  const elevFetchTokenRef = useRef(0)
+  const lastExpensiveRef = useRef(0)
+  const expensiveTokenRef = useRef(0)
 
   const observerLat = useMapStore((s) => s.observerLat)
   const observerLng = useMapStore((s) => s.observerLng)
@@ -275,43 +275,58 @@ export default function MapView() {
       updateResult()
     })
 
-    // Mouse hover: capture coordinates, terrain elevation and OSM features.
-    // Elevation is fetched (throttled) from the backend COG instead of MapLibre's
-    // terrain, because MapLibre returns 0 once the hovered point's DEM tile falls
-    // out of its cache after panning/zooming.
+    // Mouse hover: capture coordinates, OSM features and elevation.
+    // Position/x/y update cheaply & instantly for a responsive tooltip, but the
+    // expensive rendered-feature query (queryRenderedFeatures + collectHoverFeatures)
+    // and the backend elevation fetch are THROTTLED (~120ms). queryRenderedFeatures
+    // running on every mousemove (60+ Hz during a drag) blocks the main thread and
+    // makes the camera and tooltip laggy, so we bound its frequency.
     const onMove = (e: maplibregl.MapMouseEvent) => {
       const lng = e.lngLat.lng
       const lat = e.lngLat.lat
+      const x = e.point.x
+      const y = e.point.y
+      const last = hoverStateRef.current
+
+      // Instant, cheap update so the tooltip follows the cursor smoothly.
+      setHoverPosition({
+        lng,
+        lat,
+        features: last?.features ?? [],
+        elevation: elevRef.current,
+        x,
+        y,
+      })
+
+      const now = performance.now()
+      if (now - lastExpensiveRef.current < 120) return
+      lastExpensiveRef.current = now
+      const token = ++expensiveTokenRef.current
+
+      // Expensive: query the rendered OSM features for this position.
       const features = collectHoverFeatures(
         map.queryRenderedFeatures(e.point) as Array<{
           layer?: { id?: string }
           properties?: Record<string, unknown>
         }>,
       )
-      const pos = { lng, lat, features, x: e.point.x, y: e.point.y }
-      hoverStateRef.current = pos
-      setHoverPosition({ ...pos, elevation: elevRef.current })
+      hoverStateRef.current = { lng, lat, features, x, y }
 
-      // Throttled backend elevation sample for the current pointer position.
-      const now = performance.now()
-      if (now - lastElevFetchRef.current > 150) {
-        lastElevFetchRef.current = now
-        const token = ++elevFetchTokenRef.current
-        fetchElevation(lng, lat).then((elev) => {
-          if (token !== elevFetchTokenRef.current) return // superseded by a newer move
-          elevRef.current = elev
-          const hs = hoverStateRef.current
-          if (hs && hs.lng === lng && hs.lat === lat) {
-            setHoverPosition({ ...hs, elevation: elev })
-          }
-        })
-      }
+      // Backend COG elevation sample for the current pointer position.
+      fetchElevation(lng, lat).then((elev) => {
+        if (token !== expensiveTokenRef.current) return // superseded by a newer move
+        elevRef.current = elev
+        const hs = hoverStateRef.current
+        if (hs && hs.lng === lng && hs.lat === lat) {
+          setHoverPosition({ ...hs, elevation: elev })
+        }
+      })
     }
     const onLeave = () => {
       setHoverPosition(null)
       hoverStateRef.current = null
       elevRef.current = null
-      elevFetchTokenRef.current++ // invalidate any in-flight fetch
+      expensiveTokenRef.current++ // invalidate any in-flight fetch/query
     }
     map.on('mousemove', onMove)
     map.on('mouseleave', onLeave)

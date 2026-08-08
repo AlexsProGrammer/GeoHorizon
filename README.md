@@ -117,6 +117,11 @@ gdalbuildvrt combined_blueprint.vrt *.txt
 gdal_translate -of GTiff -co COMPRESS=DEFLATE -co TILED=YES combined_blueprint.vrt ../merged_dgm.tif
 ```
 
+Download .mbtiles from [OpenFreeMap](https://openfreemap.org/):
+```bash
+# Convert to .pmtiles using gdal:
+ogr2ogr basemap.pmtiles input.mbtiles 
+```
 
 ## 🚀 Getting Started (Development)
 

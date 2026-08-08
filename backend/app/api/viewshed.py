@@ -12,7 +12,7 @@ from rasterio.warp import transform_bounds
 from app.worker import celery_app
 from app.worker.viewshed_tasks import run_viewshed_task
 
-router = APIRouter(prefix="/api/viewshed", tags=["viewshed"])
+router = APIRouter(prefix="/viewshed", tags=["viewshed"])
 
 PROCESSED_DIR = Path("/data/processed")
 

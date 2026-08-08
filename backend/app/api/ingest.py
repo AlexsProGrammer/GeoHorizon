@@ -13,7 +13,7 @@ from app.worker.ingestion_tasks import (
 
 IMPORT_DIR = Path("/data/import")
 
-router = APIRouter(prefix="/api/ingest", tags=["ingest"])
+router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 
 class StartIngestRequest(BaseModel):

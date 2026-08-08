@@ -408,6 +408,12 @@ export default function MapView() {
     clearDraft()
   }
 
+  // Clear removes both the finalized search polygon and any in-progress draft.
+  function clearArea() {
+    setSearchPolygon(null)
+    clearDraft()
+  }
+
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
@@ -431,7 +437,7 @@ export default function MapView() {
             </button>
           )}
           <button
-            onClick={clearDraft}
+            onClick={clearArea}
             className="rounded bg-zinc-200 px-2.5 py-1 text-xs font-semibold text-zinc-700 hover:bg-zinc-300"
           >
             Clear

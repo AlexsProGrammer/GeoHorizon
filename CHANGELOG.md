@@ -13,6 +13,9 @@ Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
   `0` once a point's DEM tile falls out of its cache after panning/zooming. The hover tooltip now
   samples the DEM **directly from the COG** via a new throttled endpoint `GET /api/viewshed/elevation?lng=&lat=`
   (backend `api/viewshed.py`), which is always correct regardless of client tile cache.
+- **Area "Clear" button fixed:** it previously only cleared the in-progress draft vertices,
+  leaving a finalized search polygon on the map (so it appeared to do nothing). It now clears
+  both the finalized search polygon and the draft.
 - **Performance (lag fix):** the hover handler no longer runs the expensive
   `map.queryRenderedFeatures()` + backend elevation fetch on every mousemove (60+ Hz during a
   pan/rotate), which was blocking the main thread and making the camera and hover laggy. Both

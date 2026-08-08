@@ -4,6 +4,8 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 
+from app.api.ingest import router as ingest_router
+
 
 def run_migrations() -> None:
     cfg = Config("alembic.ini")
@@ -20,6 +22,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="GeoHorizon API", version="0.1.1", lifespan=lifespan)
+
+app.include_router(ingest_router)
 
 
 @app.get("/health")

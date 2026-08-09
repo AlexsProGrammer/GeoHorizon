@@ -14,7 +14,7 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 * **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with a fast in-memory NumPy line-of-sight engine (WhiteboxTools remains available as a `VIEWSHED_ENGINE=whitebox` fallback).
 * **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
 * **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points, visibility is computed in-memory (no disk I/O), the grid is parallelized across Celery workers, and the Grid Step slider shows a live estimate of the sampled point count <i>before</i> you run.
-* **Color-Coded Results & Legend:** Area-search positions are colored green (≥70% sky visibility), yellow (30–70%), or red (<30%), with a toggleable legend in the sidebar so you can isolate just the best spots.
+* **Color-Coded Results & Legend:** Point and area-search results are colored green (≥70% sky visibility), yellow (30–70%), or red (<30%), with a toggleable legend in the sidebar so you can isolate just the best spots.
 * **Long-Range Horizon Check:** An optional 100 km horizon ray-cast that catches distant mountains blocking the view even when the local radius looks clear. Long rays are cached per direction and reused across all sampled points, so the check stays fast.
 * **3D Terrain & Interactions:** MapLibre 3D terrain (terrain-RGB tiles generated from the DEM on demand) so hills and valleys render realistically, a clickable compass to reset north, a mouse-hover tooltip with coordinates/elevation/OSM labels, and a shared depth buffer that prevents overlay z-fighting when rotating.
 * **Dynamic Elevation Offsets:** Automatically combines base terrain heights with environmental obstacles (+30m for forests, dynamic heights for buildings).
@@ -23,7 +23,7 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 * **100% DSGVO / GDPR Compliant:** Air-gapped capable. Uses local PMTiles for base maps and self-hosted fonts. No telemetry, no Google/Mapbox API calls.
 
 ## 🏗️ Tech Stack
-* **Frontend:** React, Vite, MapLibre GL JS, Deck.gl (Hardware-accelerated rendering).
+* **Frontend:** React, Vite, MapLibre GL JS (native vector overlays draped on the 3D terrain).
 * **Backend:** Python, FastAPI, WebSockets.
 * **Processing Engine:** Celery, Redis, NumPy, Rasterio, WhiteboxTools, rio-cogeo, Pyrosm, GeoPandas.
 * **Database:** PostgreSQL with PostGIS extension (GeoAlchemy2 + Alembic migrations).
@@ -95,12 +95,12 @@ geo-horizon/
         ├── components/
         │   ├── Sidebar.tsx      # Settings panel (sliders, Calculate/Kill buttons)
         │   ├── ProgressBar.tsx  # WebSocket-driven loading UI
-        │   └── MapView.tsx      # MapLibre GL + Deck.gl container
+        │   └── MapView.tsx      # MapLibre GL map container
         ├── hooks/
         │   └── useTaskWebSocket.ts  # WebSocket progress client
         └── services/
             ├── api.ts           # API fetch wrappers
-            └── geometry.ts      # Cone-preview polygon generator
+            └── geometry.ts      # Cone-preview + circle search-area polygon generators
 ```
 
 ## Setup Data
@@ -222,7 +222,9 @@ The **area search** engine (`area_search.py`) builds on this flow to find the be
 The **horizon profiler** (`horizon_profiler.py`) casts optional long-range rays (default 100 km, one every ~5° within the FOV, 72 even rays for 360°) to detect distant mountains. Terrain elevations along each ray are sampled once, Earth-curvature-corrected, and cached to `/data/processed/horizon_cache/` as `.npz` per direction — every observer in an area search reuses the same profiles. When enabled, a position's score is `local_visibility × horizon_clear_fraction`.
 
 ### `POST /api/viewshed/start`
-Dispatches a viewshed calculation as a Celery task.
+Dispatches a single-point viewshed as a background Celery task. The observer is wrapped in a
+circular search area of the configured `radius_km` and scored by the same multi-point engine as
+area mode, so it returns the same scored GeoJSON result. `fov >= 360` selects panoramic scoring.
 
 **Request body:**
 ```json
@@ -267,8 +269,11 @@ Dispatches a multi-point area search as a background Celery task. Finds the best
 
 Progress is streamed over the same `WS /ws/progress/{task_id}` channel (`PREPARING_AREA` → `BUILDING_DSM` → `SAMPLING` → `CALCULATING` with per-point updates).
 
-### `GET /api/viewshed/area-result/{task_id}`
-Returns the scored result of an area search as a GeoJSON `FeatureCollection`. Each feature is a Point with a `score` property (0.0–1.0 = sky-visibility ratio); a `meta.count` field reports the number of sampled points.
+### `GET /api/viewshed/result/{task_id}` (alias: `/api/viewshed/area-result/{task_id}`)
+Returns the scored result of a point or area search as a GeoJSON `FeatureCollection`. Point mode
+now produces the same result format as area mode (a circular area around the observer is scored),
+so a single endpoint serves both. Each feature is a Point with a `score` property (0.0–1.0 =
+sky-visibility ratio); a `meta.count` field reports the number of sampled points.
 
 ```json
 {
@@ -281,7 +286,11 @@ Returns the scored result of an area search as a GeoJSON `FeatureCollection`. Ea
 ```
 
 ### `GET /api/viewshed/status/{task_id}`
-Returns the task state and, on success, the result metadata (`viewshed_path`, `bbox`, `crs`, optional `horizon_pass`/`horizon_score`). The result GeoTIFF is written to `/data/processed/viewshed_{task_id}.tif`.
+Returns the task state and, on success, the result metadata. For both point and area searches the
+final result is the scored GeoJSON written to `/data/processed/area_{task_id}.json`. Because the
+area-search orchestrator dispatches a Celery chord and returns before the merge callback persists
+the result, this endpoint reports `SUCCESS` only once that file actually exists (so the frontend
+never races ahead of the merge).
 
 ### `GET /api/viewshed/terrain/{z}/{x}/{y}.png`
 Returns a Mapbox terrain-RGB PNG tile for the MapLibre 3D terrain. The tile is warped from the first available processed COG into Web-Mercator, elevation-encoded as terrain-RGB, and cached to `/data/processed/terrain_cache/`. The frontend uses this as a `raster-dem` source with `map.setTerrain(...)`.
@@ -322,15 +331,6 @@ the DEM extent or is a no-data pixel).
 The **Kill Switch**. Hard-terminates a running viewshed task by revoking the Celery process with `SIGKILL`, so heavy native computation (WhiteboxTools / GDAL) stops instantly.
 
 **Response:** `{ "task_id": "8e3f…", "status": "CANCELLED" }`
-
-### `GET /api/viewshed/result/{task_id}/image`
-Returns the viewshed result as a PNG image with its geographic extent.
-The visibility mask is rendered as semi-transparent green; blocked cells and areas outside the cone are transparent.
-
-**Response headers:**
-- `X-Bounds`: JSON array `[minLng, minLat, maxLng, maxLat]` in EPSG:4326
-- `X-CRS`: Always `EPSG:4326`
-- `Content-Type`: `image/png`
 
 ### `WS /ws/progress/{task_id}`
 Connect for real-time progress of a viewshed task. The server subscribes to the Redis channel `task_progress:{task_id}` and forwards each update verbatim as JSON text:

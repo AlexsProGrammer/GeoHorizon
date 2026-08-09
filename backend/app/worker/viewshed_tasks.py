@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
 import numpy as np
-import rasterio
 import redis
-from celery import group
+from celery import chord, group
 from pyproj import CRS
 from rasterio.transform import Affine
 
@@ -19,7 +19,6 @@ from app.engine.area_search import (
     process_points_batch,
     resolve_engine,
 )
-from app.engine.pipeline import run_viewshed_pipeline
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT
 from app.worker import celery_app
 
@@ -45,21 +44,6 @@ def _publish_progress(task_id: str, status: str, progress: int, step: str) -> No
         )
     except Exception:
         pass
-
-
-def _write_geotiff(path: str, array: np.ndarray, transform, crs) -> None:
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        height=array.shape[0],
-        width=array.shape[1],
-        count=1,
-        dtype=array.dtype,
-        crs=crs,
-        transform=transform,
-    ) as dst:
-        dst.write(array, 1)
 
 
 def _worker_slot_count() -> int:
@@ -159,6 +143,7 @@ def run_area_search_batch_task(self, params: dict):
         observer_height=params["observer_height"],
         horizon=horizon,
         engine="numpy",
+        panoramic_directions=params.get("panoramic_directions", 12),
         progress_callback=progress,
         offset=params.get("batch_offset", 0),
         global_total=params.get("global_total"),
@@ -175,8 +160,80 @@ def run_area_search_task(self, params: dict):
     Celery workers (``run_area_search_batch_task``) and merged when all batches
     finish. For a single-process pool it falls back to the serial path.
     """
-    task_id = self.request.id
+    return _run_area_search_for_task(self.request.id, params)
 
+
+def _circle_polygon_wgs84(lng: float, lat: float, radius_km: float, num_points: int = 64) -> dict:
+    """Build a WGS84 circular GeoJSON polygon centred on ``(lng, lat)``.
+
+    Used by single-point mode so it can reuse the same multi-point area-search
+    engine: the clicked observation point becomes the centre of a circular
+    search area of the given radius, and nearby grid points are scored as
+    candidate viewpoints.
+    """
+    radius_m = radius_km * 1000.0
+    meters_per_deg_lat = 111320.0
+    meters_per_deg_lng = 111320.0 * math.cos(math.radians(lat))
+    coords = []
+    for i in range(num_points):
+        angle = 2.0 * math.pi * i / num_points
+        dx = math.sin(angle) * radius_m
+        dy = math.cos(angle) * radius_m
+        coords.append([lng + dx / meters_per_deg_lng, lat + dy / meters_per_deg_lat])
+    coords.append(coords[0])
+    return {"type": "Polygon", "coordinates": [coords]}
+
+
+@celery_app.task(name="viewshed.merge_area_search")
+def merge_area_search_results(
+    results: list, task_id: str, dsm_path: str | None, crs_str: str, total: int
+) -> dict:
+    """Chord callback that merges all area-search batch results and persists them.
+
+    Receives the ordered results from every ``run_area_search_batch_task``,
+    merges them in ``batch_index`` order into a single FeatureCollection, writes
+    the scored GeoJSON, cleans up the shared DSM and publishes the final SUCCESS
+    progress frame. Running this as a dedicated Celery task (in a chord) means the
+    orchestrator never calls ``result.get()`` inside a task and never deletes the
+    shared DSM before the async batches have loaded it.
+    """
+    try:
+        ordered = sorted(results, key=lambda r: r["batch_index"])
+        features: list = []
+        for r in ordered:
+            features.extend(r["features"])
+        fc = {
+            "type": "FeatureCollection",
+            "features": features,
+            "meta": {"crs": crs_str, "count": total},
+        }
+        _persist_area_result(task_id, fc)
+    except Exception as exc:
+        _publish_progress(task_id, "FAILURE", 0, f"Area search failed: {exc}")
+        raise
+    finally:
+        if dsm_path:
+            try:
+                Path(dsm_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    _publish_progress(task_id, "SUCCESS", 100, "Complete")
+    return {
+        "result_path": str(PROCESSED_DIR / f"area_{task_id}.json"),
+        "count": total,
+        "crs": crs_str,
+    }
+
+
+def _run_area_search_for_task(task_id: str, params: dict) -> dict:
+    """Core area-search orchestration shared by area-search and point modes.
+
+    Builds the shared DSM and grid, then either dispatches the grid points to
+    Celery workers (as a chord with ``merge_area_search_results`` as its
+    callback) or processes them serially. Point mode (``viewshed.run_pipeline``)
+    feeds this a circular search area auto-generated around the observer.
+    """
     def progress(status: str, pct: int, step: str) -> None:
         _publish_progress(task_id, status, pct, step)
 
@@ -216,7 +273,13 @@ def run_area_search_task(self, params: dict):
         features = []
         slots = _worker_slot_count()
 
-        # Parallel path (reserve one slot for this orchestrator to wait on).
+        # Parallel path: dispatch the grid points to Celery workers as a chord.
+        # The merge callback finalizes the result (persist, clean up the shared
+        # DSM, publish SUCCESS), so this orchestrator never blocks on
+        # ``result.get()`` and never deletes the DSM ahead of the async batches
+        # (fixes the "Never call result.get() within a task" RuntimeError and the
+        # resulting FileNotFoundError when the orchestrator's ``finally`` removed
+        # the shared DSM before the batches loaded it).
         if engine == "numpy" and slots > 1 and total >= 2:
             dsm_path = PROCESSED_DIR / f"area_{task_id}_dsm.npy"
             try:
@@ -245,6 +308,7 @@ def run_area_search_task(self, params: dict):
                                 "mask_fov": ctx["mask_fov"],
                                 "radius_px": ctx["radius_px"],
                                 "observer_height": ctx["observer_height"],
+                                "panoramic_directions": ctx["panoramic_directions"],
                                 "horizon": horizon_ref,
                                 "batch_index": bi,
                                 "task_id": task_id,
@@ -255,47 +319,59 @@ def run_area_search_task(self, params: dict):
                     )
                     offset += len(batch)
 
-                job = group(headers).apply_async()
-                results = job.get(timeout=max(120, total * 30), propagate=True)
-                ordered = sorted(results, key=lambda r: r["batch_index"])
-                for r in ordered:
-                    features.extend(r["features"])
-            finally:
-                dsm_path.unlink(missing_ok=True)
-        else:
-            # Serial fallback (single slot or explicit whitebox engine). Reuse the
-            # already-built DSM; for whitebox write it once and share that file.
-            dsm_path = None
-            tmp_dir = None
-            try:
-                if engine == "whitebox":
-                    import shutil
-                    import tempfile
-                    from app.engine.viewshed import write_dsm
-
-                    tmp_dir = tempfile.mkdtemp(prefix="area_viewshed_")
-                    dsm_path = os.path.join(tmp_dir, "dsm.tif")
-                    write_dsm(dsm_path, ctx["dsm"], ctx["transform"], ctx["crs"])
-
-                features = process_points_batch(
-                    ctx["dsm"],
-                    ctx["transform"],
-                    ctx["crs"],
-                    ctx["points"],
-                    azimuth=ctx["azimuth"],
-                    mask_fov=ctx["mask_fov"],
-                    radius_px=ctx["radius_px"],
-                    observer_height=ctx["observer_height"],
-                    horizon=ctx["horizon"],
-                    engine=engine,
-                    dsm_path=dsm_path,
-                    progress_callback=progress,
-                    offset=0,
-                    global_total=total,
+                chord(group(headers))(
+                    merge_area_search_results.s(
+                        task_id=task_id,
+                        dsm_path=str(dsm_path),
+                        crs_str=crs_str,
+                        total=total,
+                    )
                 )
-            finally:
-                if tmp_dir is not None:
-                    shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                dsm_path.unlink(missing_ok=True)
+                raise
+
+            return {
+                "task_id": task_id,
+                "state": "PROCESSING",
+                "count": total,
+                "crs": crs_str,
+            }
+
+        # Serial fallback (single slot or explicit whitebox engine). Reuse the
+        # already-built DSM; for whitebox write it once and share that file.
+        dsm_path = None
+        tmp_dir = None
+        try:
+            if engine == "whitebox":
+                import shutil
+                import tempfile
+                from app.engine.viewshed import write_dsm
+
+                tmp_dir = tempfile.mkdtemp(prefix="area_viewshed_")
+                dsm_path = os.path.join(tmp_dir, "dsm.tif")
+                write_dsm(dsm_path, ctx["dsm"], ctx["transform"], ctx["crs"])
+
+            features = process_points_batch(
+                ctx["dsm"],
+                ctx["transform"],
+                ctx["crs"],
+                ctx["points"],
+                azimuth=ctx["azimuth"],
+                mask_fov=ctx["mask_fov"],
+                radius_px=ctx["radius_px"],
+                observer_height=ctx["observer_height"],
+                horizon=ctx["horizon"],
+                engine=engine,
+                dsm_path=dsm_path,
+                panoramic_directions=ctx["panoramic_directions"],
+                progress_callback=progress,
+                offset=0,
+                global_total=total,
+            )
+        finally:
+            if tmp_dir is not None:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
         fc = {
             "type": "FeatureCollection",
@@ -326,48 +402,20 @@ def _persist_area_result(task_id: str, fc: dict) -> None:
 
 @celery_app.task(bind=True, name="viewshed.run_pipeline")
 def run_viewshed_task(self, params: dict):
-    """Run the viewshed pipeline and persist the result GeoTIFF."""
+    """Single-point viewshed, unified with the area-search result format.
+
+    The clicked observation point is wrapped in a circular search area of the
+    configured radius and the same multi-point engine scores the nearby grid
+    points as candidate viewpoints. The output is a scored GeoJSON
+    FeatureCollection (green/yellow/red quality bands), identical to area mode —
+    instead of the old single PNG overlay. Directional vs 360° scoring is
+    controlled by ``fov`` (>= 360 → panoramic).
+    """
     task_id = self.request.id
-
-    def progress(status: str, pct: int, step: str) -> None:
-        _publish_progress(task_id, status, pct, step)
-
-    progress("STARTED", 5, "Starting viewshed pipeline")
-
-    try:
-        with SessionLocal() as session:
-            result = run_viewshed_pipeline(
-                session,
-                cog_path=params["cog_path"],
-                lat=params["lat"],
-                lng=params["lng"],
-                radius_km=params["radius_km"],
-                azimuth=params["azimuth"],
-                fov=params["fov"],
-                observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
-                tree_height=params.get("tree_height", 30.0),
-                building_height=params.get("building_height", 15.0),
-                horizon_enabled=params.get("horizon_enabled", False),
-                horizon_max_km=params.get("horizon_max_km", 100.0),
-                horizon_cache_dir=str(PROCESSED_DIR / "horizon_cache"),
-                progress_callback=progress,
-            )
-
-        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-        out_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
-        _write_geotiff(str(out_path), result["visibility"], result["transform"], result["crs"])
-
-        progress("SUCCESS", 100, "Complete")
-
-        return {
-            "viewshed_path": str(out_path),
-            "bbox": list(result["bbox"]),
-            "crs": result["crs"].to_string(),
-            "horizon_pass": result.get("horizon_pass"),
-            "horizon_score": result.get("horizon_score"),
-        }
-    except Exception as exc:
-        # Notify the frontend immediately so it can show the error and stop,
-        # then re-raise so Celery still records the task as failed.
-        progress("FAILURE", 0, f"Calculation failed: {exc}")
-        raise
+    circle = _circle_polygon_wgs84(
+        params["lng"], params["lat"], params["radius_km"]
+    )
+    area_params = dict(params)
+    area_params["search_area"] = circle
+    area_params.setdefault("grid_step_m", 50.0)
+    return _run_area_search_for_task(task_id, area_params)

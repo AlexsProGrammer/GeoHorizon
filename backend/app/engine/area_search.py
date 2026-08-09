@@ -42,6 +42,7 @@ from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed, wri
 __all__ = [
     "sample_grid_points",
     "score_viewshed",
+    "score_viewshed_panoramic",
     "prepare_area_search",
     "process_points_batch",
     "run_area_search",
@@ -116,6 +117,40 @@ def score_viewshed(visibility: np.ndarray, cone: np.ndarray) -> float:
     return visible / in_cone
 
 
+def score_viewshed_panoramic(
+    visibility: np.ndarray,
+    transform,
+    shape: tuple,
+    x: float,
+    y: float,
+    radius_px: float,
+    directions: int = 12,
+    geometry: tuple[np.ndarray, np.ndarray] | None = None,
+) -> float:
+    """Panoramic sky-visibility score using discrete direction sampling.
+
+    Instead of a single full-circle mask (one global ratio), the 360° view is
+    split into ``directions`` evenly-spaced directional cones (e.g. 12 cones of
+    30° each) and the per-cone sky-visibility ratio is averaged. This is faster
+    and numerically more intuitive for "how good is the all-around view": a spot
+    that's wide open on one side but fully blocked on another lands in between
+    rather than being averaged into one undifferentiated ratio.
+
+    The expensive viewshed is computed exactly once by the caller; the N cone
+    masks are cheap ``&``/``count_nonzero`` operations on the shared meshgrid.
+    """
+    n_dir = max(1, int(directions))
+    slice_fov = 360.0 / n_dir
+    total = 0.0
+    for k in range(n_dir):
+        az = k * slice_fov
+        cone = create_directional_mask(
+            shape, transform, x, y, az, slice_fov, radius_px, geometry=geometry
+        )
+        total += score_viewshed(visibility, cone)
+    return total / n_dir
+
+
 def _dem_elevation(dem_array: np.ndarray, transform, x: float, y: float) -> float:
     """Sample the DEM (MSL) at a projected point (x, y)."""
     col, row = ~transform * (x, y)
@@ -148,6 +183,7 @@ def prepare_area_search(
     horizon_enabled: bool = False,
     horizon_max_km: float = 100.0,
     horizon_cache_dir: str | None = None,
+    panoramic_directions: int = 12,
     progress_callback: Callable[[str, int, str], None] | None = None,
 ) -> dict:
     """Build the shared DSM and sampling grid once for an area search.
@@ -158,6 +194,7 @@ def prepare_area_search(
     - ``transform`` / ``crs`` / ``pixel_size``: georeferencing
     - ``points`` / ``total``: sampled grid points and their count
     - ``radius_px`` / ``mask_fov`` / ``azimuth`` / ``observer_height``
+    - ``panoramic_directions``: number of discrete directions for 360° scoring
     - ``horizon``: serialisable horizon data (or ``None``)
     """
     def _emit(status: str, progress: int, step: str) -> None:
@@ -209,6 +246,7 @@ def prepare_area_search(
             "mask_fov": 360.0,
             "azimuth": azimuth,
             "observer_height": observer_height,
+            "panoramic_directions": max(1, int(panoramic_directions)),
             "horizon": None,
         }
 
@@ -252,6 +290,7 @@ def prepare_area_search(
         "mask_fov": mask_fov,
         "azimuth": azimuth,
         "observer_height": observer_height,
+        "panoramic_directions": max(1, int(panoramic_directions)),
         "horizon": horizon,
     }
 
@@ -288,6 +327,7 @@ def process_points_batch(
     horizon: dict | None = None,
     engine: str = DEFAULT_VIEWSHED_ENGINE,
     dsm_path: str | None = None,
+    panoramic_directions: int = 12,
     progress_callback: Callable[[str, int, str], None] | None = None,
     offset: int = 0,
     global_total: int | None = None,
@@ -318,10 +358,24 @@ def process_points_batch(
                 dsm, transform, crs, (x, y), observer_height, dsm_path=dsm_path
             )
 
-        cone = create_directional_mask(
-            dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
-        )
-        score = score_viewshed(visibility, cone)
+        if mask_fov >= 360.0:
+            # 360° / panoramic: score by averaging per-direction visibility across
+            # discrete evenly-spaced cones (fast: one viewshed, N cheap masks).
+            score = score_viewshed_panoramic(
+                visibility,
+                transform,
+                dsm.shape,
+                x,
+                y,
+                radius_px,
+                directions=panoramic_directions,
+                geometry=geometry,
+            )
+        else:
+            cone = create_directional_mask(
+                dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
+            )
+            score = score_viewshed(visibility, cone)
 
         if horizon is not None and horizon.get("profiles"):
             eye_altitude = _dem_elevation(dsm, transform, x, y) + observer_height
@@ -359,6 +413,7 @@ def run_area_search(
     horizon_enabled: bool = False,
     horizon_max_km: float = 100.0,
     horizon_cache_dir: str | None = None,
+    panoramic_directions: int = 12,
     progress_callback: Callable[[str, int, str], None] | None = None,
     engine: str | None = None,
 ) -> dict:
@@ -385,6 +440,7 @@ def run_area_search(
         horizon_enabled=horizon_enabled,
         horizon_max_km=horizon_max_km,
         horizon_cache_dir=horizon_cache_dir,
+        panoramic_directions=panoramic_directions,
         progress_callback=progress_callback,
     )
 
@@ -417,6 +473,7 @@ def run_area_search(
             horizon=ctx["horizon"],
             engine=engine,
             dsm_path=dsm_path,
+            panoramic_directions=ctx["panoramic_directions"],
             progress_callback=progress_callback,
             offset=0,
             global_total=total,

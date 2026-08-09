@@ -1,6 +1,5 @@
 import json
 import os
-from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +8,6 @@ import redis
 from celery.result import AsyncResult
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
-from PIL import Image
 from pydantic import BaseModel
 from rasterio.warp import transform, transform_bounds
 
@@ -37,6 +35,7 @@ class ViewshedRequest(BaseModel):
     tree_height: float = 30.0
     building_height: float = 15.0
     point_density: int | None = None
+    grid_step_m: float = 50.0
     horizon_enabled: bool = False
     horizon_max_km: float = 100.0
 
@@ -68,27 +67,52 @@ async def area_search(payload: AreaSearchRequest):
     return {"task_id": task.id}
 
 
-@router.get("/area-result/{task_id}")
-async def area_result(task_id: str):
-    """Return the scored GeoJSON FeatureCollection of an area search task."""
+@router.get("/result/{task_id}")
+async def get_result(task_id: str):
+    """Return the scored GeoJSON FeatureCollection of a viewshed / area task.
+
+    Both single-point and area-search tasks now produce the same scored GeoJSON
+    result (green/yellow/red quality bands), persisted at ``area_{task_id}.json``.
+    """
     result: AsyncResult = celery_app.AsyncResult(task_id)
-    if result.state == "SUCCESS":
-        result_path = PROCESSED_DIR / f"area_{task_id}.json"
-        if result_path.exists():
-            return json.loads(result_path.read_text())
-        # Fall back to the Celery result payload if the file is missing.
-        payload = result.result
-        if isinstance(payload, dict) and "result_path" in payload:
-            return json.loads(Path(payload["result_path"]).read_text())
-        return {"type": "FeatureCollection", "features": [], "meta": {"count": 0}}
+    result_path = PROCESSED_DIR / f"area_{task_id}.json"
+    if result_path.exists():
+        return json.loads(result_path.read_text())
     if result.state == "FAILURE":
         raise HTTPException(status_code=500, detail=str(result.info))
+    # Favour the Celery result payload when the file is missing but available.
+    payload = result.result
+    if isinstance(payload, dict) and "result_path" in payload:
+        p = Path(payload["result_path"])
+        if p.exists():
+            return json.loads(p.read_text())
+    # SUCCESS with no file means the chord orchestrator returned early and the
+    # merge callback has not persisted the result yet -> still in progress.
     raise HTTPException(status_code=202, detail="Task not finished yet")
+
+
+@router.get("/area-result/{task_id}")
+async def area_result(task_id: str):
+    """Backward-compatible alias of ``GET /result/{task_id}``."""
+    return await get_result(task_id)
 
 
 @router.get("/status/{task_id}")
 async def status(task_id: str):
     result: AsyncResult = celery_app.AsyncResult(task_id)
+    # With the chord-based orchestrator, the parent task returns (state SUCCESS)
+    # as soon as the batch tasks are dispatched; the scored result file is only
+    # written by the merge callback afterwards. Report SUCCESS to the frontend
+    # only once the result file actually exists, so polling doesn't race ahead
+    # of the merge and try to read a not-yet-written result.
+    result_path = PROCESSED_DIR / f"area_{task_id}.json"
+    if result.state == "SUCCESS" and not result_path.exists():
+        return {
+            "task_id": task_id,
+            "state": "STARTED",
+            "result": None,
+            "error": None,
+        }
     return {
         "task_id": task_id,
         "state": result.state,
@@ -120,55 +144,15 @@ async def cancel(task_id: str):
     except Exception:
         pass
 
-    out_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
+    # Clean up any persisted result (point/area mode both use area_{task_id}.json).
+    out_path = PROCESSED_DIR / f"area_{task_id}.json"
     if out_path.exists():
         out_path.unlink()
+    dsm_path = PROCESSED_DIR / f"area_{task_id}_dsm.npy"
+    if dsm_path.exists():
+        dsm_path.unlink()
 
     return {"task_id": task_id, "status": "CANCELLED"}
-
-
-@router.get("/result/{task_id}/image")
-async def get_result_image(task_id: str):
-    """Return the viewshed result as a PNG image with bounding box metadata.
-
-    Converts the GeoTIFF visibility raster to a colored PNG:
-    - Visible cells (1) → semi-transparent green
-    - Blocked / outside cone cells (0) → transparent
-
-    The geographical bounds are returned in the ``X-Bounds`` response header
-    (EPSG:4326) so the frontend can anchor the image with Deck.gl's BitmapLayer.
-    """
-    tif_path = PROCESSED_DIR / f"viewshed_{task_id}.tif"
-    if not tif_path.exists():
-        raise HTTPException(status_code=404, detail="Result not found")
-
-    with rasterio.open(tif_path) as src:
-        data = src.read(1)
-        if src.crs:
-            bbox_4326 = list(transform_bounds(src.crs, "EPSG:4326", *src.bounds))
-        else:
-            bbox_4326 = list(src.bounds)
-
-    rgba = np.zeros((data.shape[0], data.shape[1], 4), dtype=np.uint8)
-    visible_mask = data == 1
-    rgba[visible_mask, 0] = 0     # R
-    rgba[visible_mask, 1] = 200   # G
-    rgba[visible_mask, 2] = 0     # B
-    rgba[visible_mask, 3] = 180   # A (semi-transparent)
-
-    img = Image.fromarray(rgba, "RGBA")
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-
-    return Response(
-        content=buf.getvalue(),
-        media_type="image/png",
-        headers={
-            "X-Bounds": json.dumps(bbox_4326),
-            "X-CRS": "EPSG:4326",
-        },
-    )
 
 
 @router.get("/bounds")

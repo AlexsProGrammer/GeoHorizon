@@ -68,6 +68,7 @@ services:
       REDIS_URL: ${REDIS_URL}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      WORKER_CONCURRENCY: "4"
     networks:
       - horizon-net
     depends_on:

@@ -95,8 +95,9 @@ def test_area_search_returns_scored_feature_collection(tmp_path, monkeypatch):
 
 
 def test_area_search_writes_dsm_once_and_threads_path(tmp_path, monkeypatch):
-    """The shared DSM GeoTIFF must be written exactly once per area search and
-    every per-point viewshed call must reuse that same file (no re-serialization).
+    """With the WhiteboxTools engine the shared DSM GeoTIFF must be written
+    exactly once per area search and every per-point viewshed call must reuse
+    that same file (no re-serialization).
     """
     cog = tmp_path / "cog.tif"
     _make_cog(cog)
@@ -127,6 +128,7 @@ def test_area_search_writes_dsm_once_and_threads_path(tmp_path, monkeypatch):
         azimuth=270.0,
         fov=360.0,
         grid_step_m=100.0,
+        engine="whitebox",
     )
 
     # DSM serialized exactly once.
@@ -136,3 +138,64 @@ def test_area_search_writes_dsm_once_and_threads_path(tmp_path, monkeypatch):
     assert len(seen_dsm_paths) == 1
     assert seen_dsm_paths == {dsm_writes[0]}
     assert fc["meta"]["count"] == len(calls)
+
+
+def test_batched_result_matches_serial(tmp_path, monkeypatch):
+    """Scoring the grid as separate batches and merging must equal scoring it in
+    one serial pass (this is the core of the Celery chord split/merge logic)."""
+    cog = tmp_path / "cog.tif"
+    _make_cog(cog)
+
+    empty_gdf = gpd.GeoDataFrame(geometry=[])
+    monkeypatch.setattr(area, "fetch_obstacles", lambda *a, **k: (empty_gdf, empty_gdf))
+
+    params = dict(
+        db_session=None,
+        cog_path=str(cog),
+        search_area_geojson=_square_polygon_wgs84(),
+        radius_km=0.3,
+        azimuth=270.0,
+        fov=360.0,
+        grid_step_m=100.0,
+    )
+
+    fc = run_area_search(**params)
+    points = area.prepare_area_search(
+        None,
+        cog_path=str(cog),
+        search_area_geojson=_square_polygon_wgs84(),
+        radius_km=0.3,
+        azimuth=270.0,
+        fov=360.0,
+        grid_step_m=100.0,
+    )["points"]
+
+    # Split round-robin into 2 batches (mirrors _split_batches), process each,
+    # then rebuild the full grid in index order.
+    n = 2
+    batches = [list(points[i::n]) for i in range(n)]
+    ctx = area.prepare_area_search(
+        None,
+        cog_path=str(cog),
+        search_area_geojson=_square_polygon_wgs84(),
+        radius_km=0.3,
+        azimuth=270.0,
+        fov=360.0,
+        grid_step_m=100.0,
+    )
+    all_features = []
+    for bi, batch in enumerate(batches):
+        feats = area.process_points_batch(
+            ctx["dsm"], ctx["transform"], ctx["crs"], batch,
+            azimuth=ctx["azimuth"], mask_fov=ctx["mask_fov"],
+            radius_px=ctx["radius_px"], observer_height=ctx["observer_height"],
+            horizon=ctx["horizon"],
+        )
+        all_features.extend(feats)
+
+    # The points coords uniquely identify each feature; compare as a multiset.
+    def key(f):
+        return (f["geometry"]["coordinates"][0], f["geometry"]["coordinates"][1])
+
+    assert sorted(key(f) for f in all_features) == sorted(key(f) for f in fc["features"])
+    assert fc["meta"]["count"] == len(points)

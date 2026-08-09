@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.10
+Version 0.1.11
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -11,9 +11,9 @@ To provide a self-hosted platform where users can calculate complex, long-range 
 
 ## ✨ Core Features
 * **Automated Data Pipeline:** Drop raw `.vrt`/GeoTIFF and OpenStreetMap `.pbf` files into a mapped folder, and the backend automatically converts them into Cloud Optimized GeoTIFFs (COGs) and PostGIS tables.
-* **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with WhiteboxTools multi-core line-of-sight calculation.
+* **Viewshed Engine (Part 3):** A localized COG extraction + DSM builder that overlays PostGIS obstacle geometries (buildings, forests) onto terrain, combined with a fast in-memory NumPy line-of-sight engine (WhiteboxTools remains available as a `VIEWSHED_ENGINE=whitebox` fallback).
 * **Directional & Panoramic Viewsheds:** Instead of expensive 360° sweeps, set an Azimuth (e.g., 270° West) and Field of View (FOV) cone to calculate specific targets (like sunsets) up to 9x faster — or slide FOV to 360° for a full panoramic viewshed with a single click.
-* **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points.
+* **Area Search (Best-Position Finder):** Draw a search area on the map (any polygon), set a grid step, and the engine scores every sampled position inside it by sky-visibility ratio. Every point runs a full viewshed, so you find the hilltop with the clearest western sunset view (or 360° panorama) — the DEM and DSM are built once and reused across all sampled points, visibility is computed in-memory (no disk I/O), the grid is parallelized across Celery workers, and the Grid Step slider shows a live estimate of the sampled point count <i>before</i> you run.
 * **Color-Coded Results & Legend:** Area-search positions are colored green (≥70% sky visibility), yellow (30–70%), or red (<30%), with a toggleable legend in the sidebar so you can isolate just the best spots.
 * **Long-Range Horizon Check:** An optional 100 km horizon ray-cast that catches distant mountains blocking the view even when the local radius looks clear. Long rays are cached per direction and reused across all sampled points, so the check stays fast.
 * **3D Terrain & Interactions:** MapLibre 3D terrain (terrain-RGB tiles generated from the DEM on demand) so hills and valleys render realistically, a clickable compass to reset north, a mouse-hover tooltip with coordinates/elevation/OSM labels, and a shared depth buffer that prevents overlay z-fighting when rotating.
@@ -71,12 +71,14 @@ geo-horizon/
 │       │   ├── horizon_profiler.py # 100km horizon ray casts (cached .npz profiles)
 │       │   ├── terrain_tiles.py  # Terrain-RGB PNG tiles for 3D terrain
 │       │   ├── cone_filter.py   # Spatial azimuth & FOV cone calculation
-│       │   ├── viewshed.py      # WhiteboxTools viewshed execution wrapper
-│       │   └── pipeline.py     # Main execution coordinator function
+│       │   ├── numpy_viewshed.py # In-memory NumPy viewshed engine (default)
+│       │   ├── viewshed.py      # WhiteboxTools viewshed execution wrapper (fallback)
+│       │   ├── pipeline.py     # Main execution coordinator function
+│       │   └── benchmark.py    # Area-search perf benchmark (`python -m app.benchmark`)
 │       └── worker/
 │           ├── __init__.py   # Celery app config
 │           ├── ingestion_tasks.py  # Raster (COG) & Vector (PostGIS) tasks
-│           └── viewshed_tasks.py   # Viewshed pipeline background task
+│           └── viewshed_tasks.py   # Viewshed pipeline + parallel area-search orchestrator
 │
 └── frontend/                # React & MapLibre UI
     ├── Dockerfile
@@ -210,12 +212,12 @@ The viewshed engine (`backend/app/engine/`) computes high-accuracy line-of-sight
 1. **Bounding Box** — `get_bounding_box(lat, lng, radius_km, src_crs)` transforms the observer from WGS84 (EPSG:4326) into the DEM's projected CRS via `pyproj` and derives a square coverage box.
 2. **COG Window Read** — `crop_dem_window(cog_path, bbox)` reads only the needed elevation window with `rasterio.windows.from_bounds()`, keeping RAM usage constant regardless of DEM size.
 3. **Obstacle Overlay** — `fetch_obstacles(db, bbox)` runs `ST_Intersects` queries against the `buildings` and `forests` tables; `build_dsm(...)` rasterizes them into height masks and adds them to the DEM: `dsm = dem + tree_mask + building_mask`.
-4. **Viewshed** — `calculate_viewshed(dsm, ...)` exports the DSM as a temporary GeoTIFF, runs WhiteboxTools' multi-core `viewshed`, and reads back the binary visibility raster (1 = visible, 0 = blocked).
-5. **Directional Cone** — `create_directional_mask(...)` keeps only cells inside the `[azimuth ± FOV/2]` wedge and within the radius, cutting computation dramatically vs. a 360° sweep.
+4. **Viewshed** — by default `numpy_viewshed(...)` computes the visibility mask in-memory (no external process, no disk I/O); the legacy path uses `calculate_viewshed(dsm, ...)`, which exports the DSM as a temporary GeoTIFF, runs WhiteboxTools' multi-core `viewshed`, and reads back the binary visibility raster (1 = visible, 0 = blocked). WhiteboxTools is selected with `VIEWSHED_ENGINE=whitebox`.
+5. **Directional Cone** — `create_directional_mask(...)` keeps only cells inside the `[azimuth ± FOV/2]` wedge and within the radius, cutting computation dramatically vs. a 360° sweep. Its meshgrid geometry is precomputed once per DSM and reused across all points.
 
 The full flow is orchestrated by `run_viewshed_pipeline(...)` in `pipeline.py` and executed in the background as a Celery task.
 
-The **area search** engine (`area_search.py`) builds on this flow to find the best positions inside a user-drawn polygon: it crops the DEM and builds the DSM *once* for the whole area, then runs a WhiteboxTools viewshed from every grid point and scores each by `visible cells / cells in the cone`. The scored points are returned as GeoJSON for the frontend to display.
+The **area search** engine (`area_search.py`) builds on this flow to find the best positions inside a user-drawn polygon: it crops the DEM and builds the DSM *once* for the whole area, writes it once for the legacy engine, and runs an in-memory NumPy viewshed from every grid point (computed in parallel across Celery workers in `worker/viewshed_tasks.py`), scoring each by `visible cells / cells in the cone`. The scored points are returned as GeoJSON for the frontend to display. The cone-filter geometry and horizon profiles are precomputed once and shared across all points.
 
 The **horizon profiler** (`horizon_profiler.py`) casts optional long-range rays (default 100 km, one every ~5° within the FOV, 72 even rays for 360°) to detect distant mountains. Terrain elevations along each ray are sampled once, Earth-curvature-corrected, and cached to `/data/processed/horizon_cache/` as `.npz` per direction — every observer in an area search reuses the same profiles. When enabled, a position's score is `local_visibility × horizon_clear_fraction`.
 
@@ -352,6 +354,8 @@ Environment variables live in `.env` (see `.env.example`):
 | `REDIS_URL` | Redis connection URL |
 | `CELERY_BROKER_URL` | Celery broker (Redis) |
 | `CELERY_RESULT_BACKEND` | Celery result backend (Redis) |
+| `VIEWSHED_ENGINE` | Viewshed engine: `auto`/`numpy` (in-memory, default) or `whitebox` (WhiteboxTools fallback) |
+| `WORKER_CONCURRENCY` | Number of Celery worker processes for parallel area-search batches |
 
 ## 🗺️ Roadmap
 
@@ -364,6 +368,7 @@ Environment variables live in `.env` (see `.env.example`):
 
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
+- **0.1.11** — Area-search performance overhaul: a fast in-memory NumPy viewshed replaced per-point WhiteboxTools + disk I/O, the DSM and horizon profiles are built once and shared, grid points run in parallel across Celery workers, the cone-filter meshgrid is precomputed, and the grid-step slider shows a live point-count estimate. `python -m app.benchmark` validates the speedup and a CI workflow asserts >=4×.
 - **0.1.10** — Bug fixes: corrected the terrain-RGB encoding, made hover elevation read the absolute DEM height from the COG directly, busted stale terrain tiles, converted interactive overlays to native MapLibre vector layers, fixed map/hover lag (lazy Deck.gl overlay + skip hover queries while moving), and raised the 3D camera `maxPitch` to 85° so you can get a near-ground view without clipping.
 - **0.1.9** — 3D terrain (terrain-RGB tiles + MapLibre `setTerrain`), z-fighting fix via shared depth buffer, a clickable north-resetting compass, and a mouse-hover tooltip with coordinates, elevation, and OSM feature labels.
 - **0.1.8** — Long-Range Horizon Check: an optional 100 km ray-cast detects distant mountains blocking the view. Profiles are Earth-curvature-corrected and cached per direction (`/data/processed/horizon_cache/`), then reused across all area-search points; a "Horizon check" toggle feeds into the area score (`local × horizon`).

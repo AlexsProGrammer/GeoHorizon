@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -f docker/backend.Dockerfile -t geohorizon-backend .
+
+      - name: Run backend unit tests
+        # Fast unit tests. The `external` marker covers the WhiteboxTools
+        # cross-checks (which download the binary on first use) and is run
+        # alongside the benchmark below inside the same CI job to reuse it.
+        run: >
+          docker run --rm geohorizon-backend
+          pytest -m "not external" -q
+
+      - name: Benchmark area search (NumPy vs WhiteboxTools)
+        # The performance plan asserts >= 4x speedup for an area search after
+        # the in-memory NumPy viewshed replaced per-point WhiteboxTools calls.
+        run: >
+          docker run --rm geohorizon-backend
+          python -m app.benchmark --area-km 1.0 --grid-step 100 --assert-threshold 4

@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.1.11] - 2026-08-09
+Area-search performance overhaul (the "viewshed performance optimization" plan, steps 1-7).
+
+The biggest win: area search no longer spawns an external WhiteboxTools process and rewrites the
+same DSM to disk for **every** sampled grid point. A new in-memory NumPy viewshed engine computes
+visibility entirely in RAM, and the DSM render + horizon profiles are now built once and shared across
+all points. For a 1 km² area at a 50 m grid step (10 000+ points with no disk I/O) this is an order of
+magnitude faster. WhiteboxTools remains available behind `VIEWSHED_ENGINE=whitebox` as a fallback.
+
+- **In-memory NumPy viewshed (`engine/numpy_viewshed.py`).** A vectorized reference-line-of-sight
+  viewshed that evaluates every cell exactly once (no external process, no disk). `numpy_viewshed`
+  computes a single observer; `numpy_viewshed_multi` computes many observers against one DSM. A
+  `reference_viewshed` reference implementation validates it on random terrain (>=95% agreement).
+  The `VIEWSHED_ENGINE=auto|numpy|whitebox` env var routes between in-memory and WhiteboxTools.
+- **DSM write-once & station batch (`engine/viewshed.py`, `engine/area_search.py`).** Extracted a
+  standalone `write_dsm`/`write_stations`; `calculate_viewshed` gained an optional `dsm_path` so the
+  shared DSM GeoTIFF is written exactly once per area search and reused by every point instead of N
+  times. Verified by a mocked-filesystem test asserting a single write.
+- **Celery-parallel area search (`worker/viewshed_tasks.py`).** `run_area_search_task` builds the DSM
+  once, writes it to a shared `.npy`, splits the grid round-robin across workers
+  (`run_area_search_batch_task`), merges the batches in order and persists the GeoJSON. Worker count
+  comes from `WORKER_CONCURRENCY` or a Celery control ping. Falls back to the serial path on a single
+  slot or when the whitebox engine is forced.
+- **Pre-computed cone filter (`engine/cone_filter.py`).** New `precompute_cone_geometry` builds the
+  `(col, row)` meshgrid once per DSM; `create_directional_mask` accepts an optional `geometry` tuple
+  (backward-compatible signature), removing the per-point `np.arange`/`np.meshgrid` allocation —
+  a large cost when scoring 10k+ points. Unit tests verify identical masks with/without geometry.
+- **Frontend density control (`Sidebar.tsx`, `useMapStore.ts`, `services/geometry.ts`).** The Grid Step
+  slider now shows a live readout of the estimated sampled points and density (`≈ N points`,
+  `Density: X pts/km²`), recomputed client-side from the polygon area and grid step with no API call.
+  New `estimateGridPointCount`/`polygonAreaKm2` helpers and a `computeEstimatedCount` store action.
+- **Horizon profile pre-computation (`area_search.py`, `worker/viewshed_tasks.py`).** Profiles are
+  already computed once at the search-area centroid; they are now stored in Redis keyed by task ID so
+  every Celery batch references one shared copy instead of duplicating the distance/elevation arrays
+  into each message (with an embedded-dict fallback if Redis is unavailable).
+- **Validation, benchmark & CI.** Added/cross-checked the validation tests
+  (`test_numpy_viewshed_matches_wbt`, `test_area_search_parallel_matches_serial`,
+  `test_cone_filter_precomputed_identical`). New `python -m app.benchmark` times a 1 km² area search
+  through the NumPy vs WhiteboxTools engines and reports the speedup, with an optional
+  `--assert-threshold` guard. A new GitHub Actions workflow builds the backend image, runs the unit
+  tests, and asserts >=4x area-search speedup in Docker.
+
 ## [0.1.10] - 2026-08-08
 Bug fixes for the 3D terrain layer & hover tooltip introduced in 0.1.9:
 - **Fixed terrain-RGB encoding:** `engine/terrain_tiles.py` now stores the Mapbox-standard

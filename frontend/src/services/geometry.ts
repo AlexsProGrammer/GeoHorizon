@@ -1,5 +1,8 @@
 import type { Feature, Polygon } from 'geojson'
 
+const EARTH_RADIUS_KM = 6371
+const METERS_PER_KM = 1000
+
 /**
  * Build a GeoJSON Polygon feature from an ordered list of vertices.
  * The polygon ring is closed automatically if not already.
@@ -60,4 +63,38 @@ export function buildConePolygon(
     properties: {},
     geometry: { type: 'Polygon', coordinates: [coords] },
   }
+}
+
+/**
+ * Compute the area (in km²) of a GeoJSON polygon on the WGS84 sphere using
+ * spherical excess. Returns the absolute area of the outer ring.
+ */
+export function polygonAreaKm2(polygon: Feature<Polygon>): number {
+  const ring = polygon.geometry.coordinates[0]
+  if (!ring || ring.length < 3) return 0
+
+  let total = 0
+  const n = ring.length
+  for (let i = 0; i < n; i++) {
+    const [lng1, lat1] = ring[i]
+    const [lng2, lat2] = ring[(i + 1) % n]
+    total +=
+      ((lng2 - lng1) * Math.PI) / 180 *
+      (2 + Math.sin((lat1 * Math.PI) / 180) + Math.sin((lat2 * Math.PI) / 180))
+  }
+  return Math.abs((total * EARTH_RADIUS_KM * EARTH_RADIUS_KM) / 2)
+}
+
+/**
+ * Estimate how many grid points a grid-step area search will sample.
+ * ``points = area_km2 * 1e6 / (grid_step_m ^ 2)``; returns 0 when no polygon
+ * or step is available.
+ */
+export function estimateGridPointCount(
+  polygon: Feature<Polygon> | null,
+  gridStepM: number,
+): number {
+  if (!polygon || gridStepM <= 0) return 0
+  const areaKm2 = polygonAreaKm2(polygon)
+  return Math.round((areaKm2 * METERS_PER_KM * METERS_PER_KM) / (gridStepM * gridStepM))
 }

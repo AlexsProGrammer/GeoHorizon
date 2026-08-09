@@ -22,6 +22,7 @@ export default function Sidebar() {
   const searchMode = useMapStore((s) => s.searchMode)
   const searchPolygon = useMapStore((s) => s.searchPolygon)
   const gridStepM = useMapStore((s) => s.gridStepM)
+  const estimatedPointCount = useMapStore((s) => s.estimatedPointCount)
   const radiusKm = useMapStore((s) => s.radiusKm)
   const azimuth = useMapStore((s) => s.azimuth)
   const fov = useMapStore((s) => s.fov)
@@ -211,15 +212,23 @@ export default function Sidebar() {
         onChange={setFov}
       />
       {searchMode === 'area' && (
-        <Slider
-          label="Grid Step"
-          value={gridStepM}
-          display={`${gridStepM} m`}
-          min={10}
-          max={500}
-          step={10}
-          onChange={setGridStep}
-        />
+        <section>
+          <Slider
+            label="Grid Step"
+            value={gridStepM}
+            display={`${gridStepM} m`}
+            min={10}
+            max={500}
+            step={10}
+            onChange={setGridStep}
+          />
+          <p className="mt-1 flex items-center justify-between text-xs text-zinc-500">
+            <span>≈ {estimatedPointCount.toLocaleString()} points</span>
+            {gridStepM > 0 && (
+              <span>Density: {Math.round(1_000_000 / (gridStepM * gridStepM)).toLocaleString()} pts/km²</span>
+            )}
+          </p>
+        </section>
       )}
       <Slider label="Tree Offset" value={treeOffset} display={`${treeOffset} m`} min={0} max={100} step={1} onChange={setTreeOffset} />
       <Slider label="Building Offset" value={buildingOffset} display={`${buildingOffset} m`} min={0} max={100} step={1} onChange={setBuildingOffset} />

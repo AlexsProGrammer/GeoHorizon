@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { fetchCogBounds, type CogInfo } from '../services/api'
+import { estimateGridPointCount } from '../services/geometry'
 import type { Feature, FeatureCollection, Polygon } from 'geojson'
 
 export type ViewshedStatus =
@@ -55,6 +56,7 @@ interface MapState {
   searchPolygon: Feature<Polygon> | null
   draftVertices: [number, number][]
   gridStepM: number
+  estimatedPointCount: number
   resultGeoJSON: FeatureCollection | null
   legendVisibility: LegendVisibility
 
@@ -90,6 +92,7 @@ interface MapState {
   addDraftVertex: (lngLat: [number, number]) => void
   clearDraft: () => void
   setGridStep: (m: number) => void
+  computeEstimatedCount: () => void
   setResultGeoJSON: (geojson: FeatureCollection | null) => void
   toggleLegendColor: (color: LegendColor) => void
   setCog: (path: string) => void
@@ -119,6 +122,7 @@ export const useMapStore = create<MapState>((set) => ({
   searchPolygon: null,
   draftVertices: [],
   gridStepM: 50,
+  estimatedPointCount: 0,
   resultGeoJSON: null,
   legendVisibility: { green: true, yellow: true, red: true },
 
@@ -145,8 +149,12 @@ export const useMapStore = create<MapState>((set) => ({
   setObserverHeight: (observerHeight) => set({ observerHeight }),
   setHorizonEnabled: (horizonEnabled) => set({ horizonEnabled }),
   setSearchMode: (searchMode) =>
-    set({ searchMode, searchPolygon: null, draftVertices: [], resultGeoJSON: null }),
-  setSearchPolygon: (searchPolygon) => set({ searchPolygon }),
+    set({ searchMode, searchPolygon: null, draftVertices: [], resultGeoJSON: null, estimatedPointCount: 0 }),
+  setSearchPolygon: (searchPolygon) =>
+    set((state) => ({
+      searchPolygon,
+      estimatedPointCount: estimateGridPointCount(searchPolygon, state.gridStepM),
+    })),
   addDraftVertex: (lngLat) =>
     set((state) => ({
       draftVertices: state.draftVertices.some(
@@ -156,7 +164,15 @@ export const useMapStore = create<MapState>((set) => ({
         : [...state.draftVertices, lngLat],
     })),
   clearDraft: () => set({ draftVertices: [] }),
-  setGridStep: (gridStepM) => set({ gridStepM }),
+  setGridStep: (gridStepM) =>
+    set((state) => ({
+      gridStepM,
+      estimatedPointCount: estimateGridPointCount(state.searchPolygon, gridStepM),
+    })),
+  computeEstimatedCount: () =>
+    set((state) => ({
+      estimatedPointCount: estimateGridPointCount(state.searchPolygon, state.gridStepM),
+    })),
   setResultGeoJSON: (resultGeoJSON) => set({ resultGeoJSON }),
   toggleLegendColor: (color) =>
     set((state) => ({

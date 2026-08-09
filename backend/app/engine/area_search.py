@@ -7,6 +7,9 @@ viewshed is run for each sampled grid point and scored by sky visibility ratio.
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from typing import Callable
 
 import numpy as np
@@ -28,7 +31,7 @@ from app.engine.horizon_profiler import (
     observer_distance_along_ray,
     ray_azimuths,
 )
-from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
+from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed, write_dsm
 
 __all__ = ["sample_grid_points", "score_viewshed", "run_area_search"]
 
@@ -196,38 +199,53 @@ def run_area_search(
     else:
         origin_x = origin_y = 0.0
 
+    # The DSM is identical for every sampled observer: write it to disk once and
+    # reuse the file for all viewshed calls instead of re-serializing it N times.
+    _shared_tmp = tempfile.mkdtemp(prefix="area_viewshed_")
+    dsm_path = os.path.join(_shared_tmp, "dsm.tif")
+    try:
+        write_dsm(dsm_path, dsm, transform, crs)
+    except Exception:
+        shutil.rmtree(_shared_tmp, ignore_errors=True)
+        raise
+
     features = []
-    for idx, (x, y) in enumerate(points):
-        visibility = calculate_viewshed(dsm, transform, crs, (x, y), observer_height)
-        cone = create_directional_mask(
-            dem_array.shape, transform, x, y, azimuth, mask_fov, radius_px
-        )
-        score = score_viewshed(visibility, cone)
+    try:
+        for idx, (x, y) in enumerate(points):
+            visibility = calculate_viewshed(
+                dsm, transform, crs, (x, y), observer_height, dsm_path=dsm_path
+            )
+            cone = create_directional_mask(
+                dem_array.shape, transform, x, y, azimuth, mask_fov, radius_px
+            )
+            score = score_viewshed(visibility, cone)
 
-        if horizon_enabled and horizon_profiles is not None:
-            eye_altitude = _dem_elevation(dem_array, transform, x, y) + observer_height
-            clear_rays = 0
-            for ray_az in horizon_rays:
-                obs_dist = observer_distance_along_ray(
-                    ray_az, origin_x, origin_y, x, y
-                )
-                clear_rays += horizon_fraction(
-                    horizon_profiles[ray_az], obs_dist, eye_altitude, horizon_max_km
-                )
-            horizon_score = clear_rays / len(horizon_rays)
-            score *= horizon_score
+            if horizon_enabled and horizon_profiles is not None:
+                eye_altitude = _dem_elevation(dem_array, transform, x, y) + observer_height
+                clear_rays = 0
+                for ray_az in horizon_rays:
+                    obs_dist = observer_distance_along_ray(
+                        ray_az, origin_x, origin_y, x, y
+                    )
+                    clear_rays += horizon_fraction(
+                        horizon_profiles[ray_az], obs_dist, eye_altitude, horizon_max_km
+                    )
+                horizon_score = clear_rays / len(horizon_rays)
+                score *= horizon_score
 
-        lng, lat = to_wgs84.transform(x, y)
-        features.append(
-            {
-                "type": "Feature",
-                "properties": {"score": round(score, 4)},
-                "geometry": {"type": "Point", "coordinates": [round(lng, 6), round(lat, 6)]},
-            }
-        )
-        if (idx + 1) % 10 == 0 or idx + 1 == total:
-            pct = 20 + int(70 * (idx + 1) / total)
-            _emit("CALCULATING", pct, f"Point {idx + 1}/{total}")
+            lng, lat = to_wgs84.transform(x, y)
+            features.append(
+                {
+                    "type": "Feature",
+                    "properties": {"score": round(score, 4)},
+                    "geometry": {"type": "Point", "coordinates": [round(lng, 6), round(lat, 6)]},
+                }
+            )
+            if (idx + 1) % 10 == 0 or idx + 1 == total:
+                pct = 20 + int(70 * (idx + 1) / total)
+                _emit("CALCULATING", pct, f"Point {idx + 1}/{total}")
+    finally:
+        shutil.rmtree(_shared_tmp, ignore_errors=True)
 
     return {
         "type": "FeatureCollection",

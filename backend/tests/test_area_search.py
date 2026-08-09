@@ -72,7 +72,7 @@ def test_area_search_returns_scored_feature_collection(tmp_path, monkeypatch):
     monkeypatch.setattr(area, "fetch_obstacles", lambda *a, **k: (empty_gdf, empty_gdf))
     monkeypatch.setattr(
         area, "calculate_viewshed",
-        lambda dsm, transform, crs, obs, height: np.ones(dsm.shape, dtype=np.uint8),
+        lambda dsm, transform, crs, obs, height, **kwargs: np.ones(dsm.shape, dtype=np.uint8),
     )
 
     fc = run_area_search(
@@ -92,3 +92,47 @@ def test_area_search_returns_scored_feature_collection(tmp_path, monkeypatch):
     assert "score" in first["properties"]
     # Everything visible and full 360° -> every sampled point scores 1.0.
     assert all(f["properties"]["score"] == 1.0 for f in fc["features"])
+
+
+def test_area_search_writes_dsm_once_and_threads_path(tmp_path, monkeypatch):
+    """The shared DSM GeoTIFF must be written exactly once per area search and
+    every per-point viewshed call must reuse that same file (no re-serialization).
+    """
+    cog = tmp_path / "cog.tif"
+    _make_cog(cog)
+
+    empty_gdf = gpd.GeoDataFrame(geometry=[])
+    monkeypatch.setattr(area, "fetch_obstacles", lambda *a, **k: (empty_gdf, empty_gdf))
+
+    dsm_writes: list[str] = []
+    seen_dsm_paths: set[str] = set()
+    calls: list[str] = []
+
+    def fake_write_dsm(path, dsm_array, transform, crs):
+        dsm_writes.append(str(path))
+
+    def fake_calculate_viewshed(dsm, transform, crs, obs, height, **kwargs):
+        calls.append(len(calls))
+        seen_dsm_paths.add(kwargs.get("dsm_path"))
+        return np.ones(dsm.shape, dtype=np.uint8)
+
+    monkeypatch.setattr(area, "write_dsm", fake_write_dsm)
+    monkeypatch.setattr(area, "calculate_viewshed", fake_calculate_viewshed)
+
+    fc = run_area_search(
+        db_session=None,
+        cog_path=str(cog),
+        search_area_geojson=_square_polygon_wgs84(),
+        radius_km=0.3,
+        azimuth=270.0,
+        fov=360.0,
+        grid_step_m=100.0,
+    )
+
+    # DSM serialized exactly once.
+    assert len(dsm_writes) == 1
+    # Every per-point viewshed call reused that single dsm_path.
+    assert len(calls) > 0
+    assert len(seen_dsm_paths) == 1
+    assert seen_dsm_paths == {dsm_writes[0]}
+    assert fc["meta"]["count"] == len(calls)

@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { Ban, Crosshair, Map as MapIcon, MapPin, Mountain, Play } from 'lucide-react'
 import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
-import { cancelViewshed, startAreaSearch, startViewshed } from '../services/api'
+import { cancelViewshed, startAreaSearch } from '../services/api'
+import { buildCirclePolygon } from '../services/geometry'
 import Legend from './Legend'
 
 const ACTIVE_STATUSES: ViewshedStatus[] = [
@@ -26,6 +27,7 @@ export default function Sidebar() {
   const radiusKm = useMapStore((s) => s.radiusKm)
   const azimuth = useMapStore((s) => s.azimuth)
   const fov = useMapStore((s) => s.fov)
+  const panoramicMode = useMapStore((s) => s.panoramicMode)
   const treeOffset = useMapStore((s) => s.treeOffset)
   const buildingOffset = useMapStore((s) => s.buildingOffset)
   const observerHeight = useMapStore((s) => s.observerHeight)
@@ -39,6 +41,7 @@ export default function Sidebar() {
   const setRadius = useMapStore((s) => s.setRadius)
   const setAzimuth = useMapStore((s) => s.setAzimuth)
   const setFov = useMapStore((s) => s.setFov)
+  const setPanoramicMode = useMapStore((s) => s.setPanoramicMode)
   const setTreeOffset = useMapStore((s) => s.setTreeOffset)
   const setBuildingOffset = useMapStore((s) => s.setBuildingOffset)
   const setObserverHeight = useMapStore((s) => s.setObserverHeight)
@@ -70,6 +73,7 @@ export default function Sidebar() {
     resetResult()
     setError(null)
     setProgress(0, 'STARTED', 'Dispatching task...')
+    const effectiveFov = panoramicMode ? 360 : fov
     try {
       let task_id: string
       if (searchMode === 'area' && searchPolygon) {
@@ -78,7 +82,7 @@ export default function Sidebar() {
           search_area: searchPolygon.geometry,
           radius_km: radiusKm,
           azimuth,
-          fov,
+          fov: effectiveFov,
           grid_step_m: gridStepM,
           observer_height: observerHeight,
           tree_height: treeOffset,
@@ -87,13 +91,16 @@ export default function Sidebar() {
         })
         task_id = res.task_id
       } else if (observerLat != null && observerLng != null) {
-        const res = await startViewshed({
+        // Point mode: wrap the observer in a circular search area and run the
+        // same multi-point polygon engine as area mode (unified result format).
+        const circle = buildCirclePolygon(observerLng, observerLat, radiusKm)
+        const res = await startAreaSearch({
           cog_path: selectedCog,
-          lat: observerLat,
-          lng: observerLng,
+          search_area: circle.geometry,
           radius_km: radiusKm,
           azimuth,
-          fov,
+          fov: effectiveFov,
+          grid_step_m: gridStepM,
           observer_height: observerHeight,
           tree_height: treeOffset,
           building_height: buildingOffset,
@@ -152,6 +159,32 @@ export default function Sidebar() {
       </section>
 
       <section>
+        <h2 className="mb-2 text-sm font-semibold text-zinc-700">View Direction</h2>
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-zinc-100 p-1">
+          <button
+            onClick={() => setPanoramicMode(true)}
+            className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+              panoramicMode
+                ? 'bg-white text-emerald-700 shadow-sm'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+          >
+            360° Panoramic
+          </button>
+          <button
+            onClick={() => setPanoramicMode(false)}
+            className={`flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+              !panoramicMode
+                ? 'bg-white text-emerald-700 shadow-sm'
+                : 'text-zinc-600 hover:text-zinc-900'
+            }`}
+          >
+            Directional
+          </button>
+        </div>
+      </section>
+
+      <section>
         <h2 className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-zinc-700">
           {searchMode === 'point' ? (
             <>
@@ -201,16 +234,20 @@ export default function Sidebar() {
       </section>
 
       <Slider label="Radius" value={radiusKm} display={`${radiusKm} km`} min={1} max={50} step={1} onChange={setRadius} />
-      <Slider label="Azimuth" value={azimuth} display={`${azimuth}°`} min={0} max={359} step={1} onChange={setAzimuth} />
-      <Slider
-        label={fov >= 360 ? 'Field of View (Panoramic)' : 'Field of View'}
-        value={fov}
-        display={fov >= 360 ? '360° (full)' : `${fov}°`}
-        min={10}
-        max={360}
-        step={5}
-        onChange={setFov}
-      />
+      {!panoramicMode && (
+        <>
+          <Slider label="Azimuth" value={azimuth} display={`${azimuth}°`} min={0} max={359} step={1} onChange={setAzimuth} />
+          <Slider
+            label="Field of View"
+            value={fov}
+            display={`${fov}°`}
+            min={10}
+            max={360}
+            step={5}
+            onChange={setFov}
+          />
+        </>
+      )}
       {searchMode === 'area' && (
         <section>
           <Slider

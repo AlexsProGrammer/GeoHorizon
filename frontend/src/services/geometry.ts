@@ -98,3 +98,35 @@ export function estimateGridPointCount(
   const areaKm2 = polygonAreaKm2(polygon)
   return Math.round((areaKm2 * METERS_PER_KM * METERS_PER_KM) / (gridStepM * gridStepM))
 }
+
+/**
+ * Build a circular GeoJSON Polygon centred on ``(lng, lat)`` extending
+ * ``radiusKm`` metres/kilometres out. Used by point mode to auto-generate its
+ * search area so it runs through the same multi-point polygon scoring as area
+ * mode. ``numPoints`` (default 64) controls the smoothness of the circle.
+ */
+export function buildCirclePolygon(
+  lng: number,
+  lat: number,
+  radiusKm: number,
+  numPoints = 64,
+): Feature<Polygon> {
+  const radiusMeters = radiusKm * 1000
+  const metersPerDegLat = 111320
+  const metersPerDegLng = 111320 * Math.cos((lat * Math.PI) / 180)
+
+  const coords: [number, number][] = []
+  for (let i = 0; i < numPoints; i++) {
+    const angle = (2 * Math.PI * i) / numPoints
+    const dx = Math.sin(angle) * radiusMeters
+    const dy = Math.cos(angle) * radiusMeters
+    coords.push([lng + dx / metersPerDegLng, lat + dy / metersPerDegLat])
+  }
+  coords.push(coords[0])
+
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'Polygon', coordinates: [coords] },
+  }
+}

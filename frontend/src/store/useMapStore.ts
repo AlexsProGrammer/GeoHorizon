@@ -46,6 +46,9 @@ interface MapState {
   radiusKm: number
   azimuth: number
   fov: number
+  // When true, the scoring uses a full 360° panoramic sweep (fov treated as 360);
+  // when false it uses the configured directional azimuth/FOV cone.
+  panoramicMode: boolean
   treeOffset: number
   buildingOffset: number
   observerHeight: number
@@ -71,10 +74,6 @@ interface MapState {
   step: string
   errorMessage: string | null
 
-  // Result (PNG overlay + its geographic bounding box)
-  resultImageUrl: string | null
-  resultBbox: [number, number, number, number] | null
-
   // Mouse hover info shown in the map tooltip
   hoverPosition: HoverInfo | null
 
@@ -83,6 +82,7 @@ interface MapState {
   setRadius: (km: number) => void
   setAzimuth: (deg: number) => void
   setFov: (deg: number) => void
+  setPanoramicMode: (enabled: boolean) => void
   setTreeOffset: (m: number) => void
   setBuildingOffset: (m: number) => void
   setObserverHeight: (m: number) => void
@@ -99,7 +99,6 @@ interface MapState {
   setTaskId: (id: string | null) => void
   setProgress: (progress: number, status: ViewshedStatus, step: string) => void
   setError: (message: string | null) => void
-  setResult: (imageUrl: string, bbox: [number, number, number, number]) => void
   setHoverPosition: (hover: HoverInfo | null) => void
   resetTask: () => void
   resetResult: () => void
@@ -113,6 +112,7 @@ export const useMapStore = create<MapState>((set) => ({
   radiusKm: 10,
   azimuth: 270,
   fov: 40,
+  panoramicMode: false,
   treeOffset: 30,
   buildingOffset: 15,
   observerHeight: 1.8,
@@ -135,15 +135,13 @@ export const useMapStore = create<MapState>((set) => ({
   step: '',
   errorMessage: null,
 
-  resultImageUrl: null,
-  resultBbox: null,
-
   hoverPosition: null,
 
   setObserver: (lat, lng) => set({ observerLat: lat, observerLng: lng }),
   setRadius: (radiusKm) => set({ radiusKm }),
   setAzimuth: (azimuth) => set({ azimuth }),
   setFov: (fov) => set({ fov }),
+  setPanoramicMode: (panoramicMode) => set({ panoramicMode }),
   setTreeOffset: (treeOffset) => set({ treeOffset }),
   setBuildingOffset: (buildingOffset) => set({ buildingOffset }),
   setObserverHeight: (observerHeight) => set({ observerHeight }),
@@ -182,23 +180,10 @@ export const useMapStore = create<MapState>((set) => ({
   setTaskId: (taskId) => set({ taskId }),
   setProgress: (progress, status, step) => set({ progress, status, step }),
   setError: (errorMessage) => set({ errorMessage }),
-  setResult: (resultImageUrl, resultBbox) =>
-    set((state) => {
-      if (state.resultImageUrl && state.resultImageUrl !== resultImageUrl) {
-        URL.revokeObjectURL(state.resultImageUrl)
-      }
-      return { resultImageUrl, resultBbox }
-    }),
   resetTask: () =>
     set({ taskId: null, progress: 0, status: 'IDLE', step: '', errorMessage: null }),
   setHoverPosition: (hoverPosition) => set({ hoverPosition }),
-  resetResult: () =>
-    set((state) => {
-      if (state.resultImageUrl) {
-        URL.revokeObjectURL(state.resultImageUrl)
-      }
-      return { resultImageUrl: null, resultBbox: null, resultGeoJSON: null }
-    }),
+  resetResult: () => set({ resultGeoJSON: null }),
   fetchAvailableCogs: async () => {
     try {
       const cogs = await fetchCogBounds()

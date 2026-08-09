@@ -1,11 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { FeatureCollection } from 'geojson'
 import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
-import {
-  fetchAreaResult,
-  getResultImageUrl,
-  getTaskStatus,
-} from '../services/api'
+import { fetchTaskResult, getTaskStatus } from '../services/api'
 
 // The WebSocket endpoint is served directly by the API (not through the Vite
 // proxy), so it connects straight to the backend on localhost:8000.
@@ -26,9 +22,7 @@ interface ProgressFrame {
 
 export function useTaskWebSocket() {
   const taskId = useMapStore((s) => s.taskId)
-  const searchMode = useMapStore((s) => s.searchMode)
   const setProgress = useMapStore((s) => s.setProgress)
-  const setResult = useMapStore((s) => s.setResult)
   const setResultGeoJSON = useMapStore((s) => s.setResultGeoJSON)
   const resetResult = useMapStore((s) => s.resetResult)
   const setError = useMapStore((s) => s.setError)
@@ -82,7 +76,7 @@ export function useTaskWebSocket() {
         stopPolling()
         setError(null)
         setProgress(100, 'SUCCESS', step || 'Complete')
-        await fetchResult(taskId, searchMode, setResult, setResultGeoJSON)
+        await fetchResult(taskId, setResultGeoJSON)
       } else if (status === 'CANCELLED') {
         finish('CANCELLED', message || 'Calculation cancelled')
       } else if (status === 'FAILURE') {
@@ -114,7 +108,7 @@ export function useTaskWebSocket() {
         stopPolling()
         setError(null)
         setProgress(100, 'SUCCESS', 'Complete')
-        await fetchResult(taskId, searchMode, setResult, setResultGeoJSON)
+        await fetchResult(taskId, setResultGeoJSON)
       }
     }, POLL_INTERVAL_MS)
 
@@ -123,29 +117,18 @@ export function useTaskWebSocket() {
       ws.close()
       wsRef.current = null
     }
-  }, [taskId, searchMode, setProgress, setResult, setResultGeoJSON, resetResult, setError])
+  }, [taskId, setProgress, setResultGeoJSON, resetResult, setError])
 
   return wsRef
 }
 
 async function fetchResult(
   taskId: string,
-  searchMode: string,
-  setResult: (imageUrl: string, bbox: [number, number, number, number]) => void,
   setResultGeoJSON: (geojson: FeatureCollection | null) => void,
 ) {
   try {
-    if (searchMode === 'area') {
-      const fc = await fetchAreaResult(taskId)
-      setResultGeoJSON(fc)
-      return
-    }
-    const res = await fetch(getResultImageUrl(taskId))
-    if (!res.ok) return
-    const bbox = JSON.parse(res.headers.get('X-Bounds') ?? '[]') as [number, number, number, number]
-    if (bbox.length !== 4) return
-    const blobUrl = URL.createObjectURL(await res.blob())
-    setResult(blobUrl, bbox)
+    const fc = await fetchTaskResult(taskId)
+    setResultGeoJSON(fc)
   } catch {
     // ignore network/image errors
   }

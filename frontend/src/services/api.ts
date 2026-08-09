@@ -68,9 +68,9 @@ export async function startAreaSearch(params: AreaSearchRequest): Promise<{ task
   return (await res.json()) as { task_id: string }
 }
 
-export async function fetchAreaResult(taskId: string): Promise<FeatureCollection> {
-  const res = await fetch(`${API_BASE}/viewshed/area-result/${taskId}`)
-  if (!res.ok) throw new Error(`Failed to fetch area result: ${res.status}`)
+export async function fetchTaskResult(taskId: string): Promise<FeatureCollection> {
+  const res = await fetch(`${API_BASE}/viewshed/result/${taskId}`)
+  if (!res.ok) throw new Error(`Failed to fetch result: ${res.status}`)
   return (await res.json()) as FeatureCollection
 }
 
@@ -88,8 +88,4 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   const res = await fetch(`${API_BASE}/viewshed/status/${taskId}`)
   if (!res.ok) throw new Error(`Failed to fetch task status: ${res.status}`)
   return (await res.json()) as TaskStatus
-}
-
-export function getResultImageUrl(taskId: string): string {
-  return `${API_BASE}/viewshed/result/${taskId}/image`
 }

@@ -1,10 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol } from 'pmtiles'
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
-import { MapboxOverlay } from '@deck.gl/mapbox'
-import { BitmapLayer } from '@deck.gl/layers'
 import { useMapStore } from '../store/useMapStore'
 import { buildConePolygon, buildPolygonFeature } from '../services/geometry'
 import Compass from './Compass'
@@ -96,7 +94,6 @@ async function fetchElevation(lng: number, lat: number): Promise<number | null> 
 export default function MapView() {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const overlayRef = useRef<MapboxOverlay | null>(null)
   // Hover bookkeeping: the current pointer state (for the tooltip) plus the last
   // successfully fetched elevation and throttling/token refs for the COG sampler.
   const hoverStateRef = useRef<{
@@ -118,9 +115,8 @@ export default function MapView() {
   const fov = useMapStore((s) => s.fov)
   const searchPolygon = useMapStore((s) => s.searchPolygon)
   const draftVertices = useMapStore((s) => s.draftVertices)
-  const resultImageUrl = useMapStore((s) => s.resultImageUrl)
-  const resultBbox = useMapStore((s) => s.resultBbox)
   const resultGeoJSON = useMapStore((s) => s.resultGeoJSON)
+  const panoramicMode = useMapStore((s) => s.panoramicMode)
   const legendVisibility = useMapStore((s) => s.legendVisibility)
   const setObserver = useMapStore((s) => s.setObserver)
   const setSearchPolygon = useMapStore((s) => s.setSearchPolygon)
@@ -138,7 +134,8 @@ export default function MapView() {
     const src = map.getSource('gh-cone') as maplibregl.GeoJSONSource | undefined
     if (!src) return
     const show = searchMode === 'point' && observerLat != null && observerLng != null
-    src.setData(show ? (buildConePolygon(observerLng!, observerLat!, radiusKm, azimuth, fov) as unknown as any) : (EMPTY_FC as unknown as any))
+    const coneFov = panoramicMode ? 360 : fov
+    src.setData(show ? (buildConePolygon(observerLng!, observerLat!, radiusKm, azimuth, coneFov) as unknown as any) : (EMPTY_FC as unknown as any))
     map.setLayoutProperty('gh-cone-fill', 'visibility', show ? 'visible' : 'none')
     map.setLayoutProperty('gh-cone-line', 'visibility', show ? 'visible' : 'none')
   }
@@ -205,11 +202,6 @@ export default function MapView() {
       minPitch: 0,
     })
     mapRef.current = map
-
-    // NOTE: The Deck.gl MapboxOverlay is created LAZILY only when a viewshed PNG
-    // result is present (see the `layers` effect). With `interleaved: true` it
-    // renders into MapLibre's GL loop on every frame, which is a per-frame cost
-    // even with zero layers — so we avoid it entirely unless a result needs it.
 
     // Enable 3D terrain from dynamically-rendered terrain-RGB tiles.
     map.on('load', () => {
@@ -340,7 +332,6 @@ export default function MapView() {
       map.off('mouseleave', onLeave)
       map.remove()
       mapRef.current = null
-      overlayRef.current = null
     }
   }, [setHoverPosition])
 
@@ -365,7 +356,7 @@ export default function MapView() {
   // Live directional cone preview (native MapLibre layer), recomputed as params change.
   useEffect(() => {
     updateCone()
-  }, [searchMode, observerLat, observerLng, radiusKm, azimuth, fov])
+  }, [searchMode, observerLat, observerLng, radiusKm, azimuth, fov, panoramicMode])
 
   // The finalized search area drawn by the user (native MapLibre layer).
   useEffect(() => {
@@ -377,54 +368,11 @@ export default function MapView() {
     updateDraft()
   }, [searchMode, draftVertices])
 
-  // Scored area-search results (native MapLibre circle layer).
+  // Scored viewshed results (native MapLibre circle layer). Point and area modes
+  // both produce the same scored GeoJSON, so only this single layer is needed.
   useEffect(() => {
     updateResult()
   }, [resultGeoJSON, legendVisibility])
-
-  // Hardware-accelerated single-point viewshed overlay (PNG). Kept in Deck.gl
-  // because MapLibre has no direct georeferenced-image source for arbitrary bounds.
-  const viewshedLayer = useMemo(() => {
-    if (!resultImageUrl || !resultBbox) return null
-    return new BitmapLayer({
-      id: 'viewshed-result',
-      image: resultImageUrl,
-      bounds: resultBbox,
-      opacity: 0.7,
-      desaturate: 0,
-      transparentColor: [0, 0, 0, 0],
-    })
-  }, [resultImageUrl, resultBbox])
-
-  const layers = useMemo(
-    () => (viewshedLayer ? [viewshedLayer] : []),
-    [viewshedLayer],
-  )
-
-  // Push the current layers into the Deck.gl overlay whenever they change.
-  // The overlay is created lazily (only when a viewshed PNG exists) and removed
-  // when it doesn't, so the interleaved Deck.gl render pass is NOT active during
-  // every map frame — this removes a major source of camera/map lag.
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map) return
-
-    if (viewshedLayer) {
-      if (!overlayRef.current) {
-        const overlay = new MapboxOverlay({
-          interleaved: true,
-          parameters: { depthTest: true, blend: true },
-        })
-        overlayRef.current = overlay
-        map.addControl(overlay)
-      }
-      overlayRef.current.setProps({ layers })
-    } else if (overlayRef.current) {
-      map.removeControl(overlayRef.current)
-      ;(overlayRef.current as unknown as { finalize?: () => void }).finalize?.()
-      overlayRef.current = null
-    }
-  }, [viewshedLayer, layers])
 
   function finishArea() {
     if (draftVertices.length < 3) return

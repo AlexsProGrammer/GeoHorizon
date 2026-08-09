@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.12] - 2026-08-09
+Unified point & area viewshed scoring, a 360° panoramic toggle, and bug fixes for the
+overlay rendering and the Celery area-search task. Both analysis modes now produce the
+same scored GeoJSON result (green/yellow/red quality bands) instead of a separate PNG
+overlay, so the legend and the map rendering are shared.
+
+- **Unified result format (point = circle area).** Point mode no longer renders a single
+  green PNG overlay. The clicked observer position is wrapped in a circular search area
+  (frontend `buildCirclePolygon`; backend `run_viewshed_task` also auto-builds the same
+  circle) and scored by the same multi-point engine as area mode, returning a scored
+  GeoJSON FeatureCollection. Frontend result fetching (`fetchTaskResult` /
+  `GET /api/viewshed/result/{task_id}`) is now identical for both modes.
+- **360° / Directional toggle.** New "View Direction" switch in the sidebar
+  (`panoramicMode`). 360° scores every candidate by average visibility across discrete
+  directions (`score_viewshed_panoramic` — a cheap per-direction cone average over one
+  computed viewshed, default 12 directions / every 30°); Directional keeps the
+  azimuth/FOV cone. Azimuth + FOV sliders are hidden in 360° mode.
+- **Removed Deck.gl green mask.** The single-point viewshed `BitmapLayer` /
+  `MapboxOverlay` is gone — it caused z-fighting with the 3D terrain and drifted with the
+  camera when panning/rotating. All results now render as native MapLibre layers that stay
+  glued to the terrain. This also removes the interleaved Deck.gl render pass.
+- **Celery chord fix.** Area-search orchestration no longer calls `result.get()` inside a
+  task (which raised `Never call result.get() within a task!`). The grid batches now run as
+  a Celery chord whose `merge_area_search_results` callback merges, persists, cleans up the
+  shared DSM (fixing the `FileNotFoundError` that occurred when the orchestrator deleted the
+  DSM before the async batches loaded it) and publishes the final progress.
+- **Renamed result endpoint.** `GET /api/viewshed/area-result/{task_id}` is now
+  `GET /api/viewshed/result/{task_id}` (old path kept as a backward-compatible alias).
+
 ## [0.1.11] - 2026-08-09
 Area-search performance overhaul (the "viewshed performance optimization" plan, steps 1-7).
 

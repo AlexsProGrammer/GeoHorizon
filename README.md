@@ -1,6 +1,6 @@
 # GeoHorizon: Local GIS Viewshed & Line-of-Sight Analyzer
 
-Version 0.1.11
+Version 0.1.12
 
 An offline-first, high-performance, and DSGVO-compliant web application for calculating highly accurate viewsheds. Originally designed to find the perfect sunset viewpoints by combining base elevation data (DEM) with environmental obstacles (trees, buildings).
 
@@ -369,6 +369,7 @@ Environment variables live in `.env` (see `.env.example`):
 See [CHANGELOG.md](./CHANGELOG.md) for the full history. Highlights:
 
 - **0.1.11** — Area-search performance overhaul: a fast in-memory NumPy viewshed replaced per-point WhiteboxTools + disk I/O, the DSM and horizon profiles are built once and shared, grid points run in parallel across Celery workers, the cone-filter meshgrid is precomputed, and the grid-step slider shows a live point-count estimate. `python -m app.benchmark` validates the speedup and a CI workflow asserts >=4×.
+- **0.1.12** — Unified point & area modes (both return scored GeoJSON; point mode scores a circular area around the observer), a 360°/Directional view-direction toggle with discrete panoramic scoring, removed the fading/drifting Deck.gl green mask (all results are now native MapLibre layers glued to the 3D terrain), and fixed the area-search Celery task (chord-based merge, no more `result.get()` crash or premature DSM deletion).
 - **0.1.10** — Bug fixes: corrected the terrain-RGB encoding, made hover elevation read the absolute DEM height from the COG directly, busted stale terrain tiles, converted interactive overlays to native MapLibre vector layers, fixed map/hover lag (lazy Deck.gl overlay + skip hover queries while moving), and raised the 3D camera `maxPitch` to 85° so you can get a near-ground view without clipping.
 - **0.1.9** — 3D terrain (terrain-RGB tiles + MapLibre `setTerrain`), z-fighting fix via shared depth buffer, a clickable north-resetting compass, and a mouse-hover tooltip with coordinates, elevation, and OSM feature labels.
 - **0.1.8** — Long-Range Horizon Check: an optional 100 km ray-cast detects distant mountains blocking the view. Profiles are Earth-curvature-corrected and cached per direction (`/data/processed/horizon_cache/`), then reused across all area-search points; a "Horizon check" toggle feeds into the area score (`local × horizon`).

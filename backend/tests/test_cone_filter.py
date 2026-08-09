@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from rasterio.transform import from_origin
 
-from app.engine.cone_filter import create_directional_mask
+from app.engine.cone_filter import create_directional_mask, precompute_cone_geometry
 
 
 # 100x100 grid, 1m pixels, world origin at (0, 100).
@@ -47,3 +47,30 @@ def test_full_circle_everything_in_radius():
     )
     # With a full 360° FOV and a radius covering the grid, every cell is True.
     assert mask.all()
+
+
+def test_precomputed_geometry_identical_output():
+    geometry = precompute_cone_geometry(SHAPE, TRANSFORM)
+    for azimuth, fov, radius in [(270.0, 40.0, 40.0), (0.0, 360.0, 1000.0), (135.0, 90.0, 30.0)]:
+        expected = create_directional_mask(
+            SHAPE, TRANSFORM, *OBS, azimuth_deg=azimuth, fov_deg=fov, radius_px=radius
+        )
+        actual = create_directional_mask(
+            SHAPE,
+            TRANSFORM,
+            *OBS,
+            azimuth_deg=azimuth,
+            fov_deg=fov,
+            radius_px=radius,
+            geometry=geometry,
+        )
+        np.testing.assert_array_equal(actual, expected)
+
+
+def test_precomputed_geometry_shape():
+    colc, rowc = precompute_cone_geometry(SHAPE, TRANSFORM)
+    assert colc.shape == SHAPE
+    assert rowc.shape == SHAPE
+    # Pixel-edge-centered indices (0.5, 1.5, ...).
+    assert colc[0, 0] == 0.5
+    assert rowc[0, 0] == 0.5

@@ -303,10 +303,12 @@ def process_points_batch(
     ``offset``, reports global progress for the whole area search.
     """
     from app.engine.numpy_viewshed import numpy_viewshed
+    from app.engine.cone_filter import precompute_cone_geometry
 
     features: list[dict] = []
     to_wgs84 = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     n = len(points)
+    geometry = precompute_cone_geometry(dsm.shape, transform)
 
     for i, (x, y) in enumerate(points):
         if engine == "numpy":
@@ -317,7 +319,7 @@ def process_points_batch(
             )
 
         cone = create_directional_mask(
-            dsm.shape, transform, x, y, azimuth, mask_fov, radius_px
+            dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
         )
         score = score_viewshed(visibility, cone)
 

@@ -90,6 +90,47 @@ def _split_batches(points: list, n_batches: int):
     return [list(points[i::n]) for i in range(n)]
 
 
+def _horizon_redis_key(task_id: str) -> str:
+    return f"area_horizon:{task_id}"
+
+
+def _store_horizon(horizon: dict | None, task_id: str) -> dict | None:
+    """Persist a shared horizon profile set in Redis and return a slim
+    ``{"redis_key": ...}`` reference to embed in batch messages.
+
+    The profile arrays (distance/elevation) apply to the whole area search and
+    are identical for every batch, so embedding them in each batch's Celery
+    message would duplicate them across the broker. Storing once in Redis keeps
+    messages small; each batch resolves the reference on the worker. Returns
+    ``None`` when there is no horizon to share.
+    """
+    if not horizon:
+        return None
+    try:
+        redis_client.setex(_horizon_redis_key(task_id), 3600, json.dumps(horizon))
+    except Exception:
+        return horizon
+    return {"redis_key": _horizon_redis_key(task_id)}
+
+
+def _load_horizon(horizon_ref: dict | None) -> dict | None:
+    """Resolve a horizon reference back into the full profile dictionary.
+
+    ``horizon_ref`` is either ``{"redis_key": ...}`` (shared via Redis) or a
+    fully-embedded profile dict (small profiles / fallback path).
+    """
+    if not horizon_ref:
+        return None
+    key = horizon_ref.get("redis_key")
+    if not key:
+        return horizon_ref
+    try:
+        raw = redis_client.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
 @celery_app.task(bind=True, name="viewshed.run_area_search_batch")
 def run_area_search_batch_task(self, params: dict):
     """Score a subset of an area search's grid points against a shared DSM.
@@ -102,6 +143,7 @@ def run_area_search_batch_task(self, params: dict):
     dsm = np.load(params["dsm_path"])
     transform = Affine(*params["transform"])
     crs = CRS.from_user_input(params["crs"])
+    horizon = _load_horizon(params.get("horizon"))
 
     def progress(status: str, pct: int, step: str) -> None:
         _publish_progress(params["task_id"], status, pct, step)
@@ -115,7 +157,7 @@ def run_area_search_batch_task(self, params: dict):
         mask_fov=params["mask_fov"],
         radius_px=params["radius_px"],
         observer_height=params["observer_height"],
-        horizon=params.get("horizon"),
+        horizon=horizon,
         engine="numpy",
         progress_callback=progress,
         offset=params.get("batch_offset", 0),
@@ -183,6 +225,12 @@ def run_area_search_task(self, params: dict):
                 n_batches = min(slots - 1, total)
                 batches = _split_batches(ctx["points"], n_batches)
 
+                # Compute the shared horizon profiles once (already done in
+                # prepare_area_search at the search-area centroid) and store
+                # them in Redis so every batch shares one copy instead of
+                # duplicating the profile arrays across the broker.
+                horizon_ref = _store_horizon(ctx["horizon"], task_id)
+
                 headers = []
                 offset = 0
                 for bi, batch in enumerate(batches):
@@ -197,7 +245,7 @@ def run_area_search_task(self, params: dict):
                                 "mask_fov": ctx["mask_fov"],
                                 "radius_px": ctx["radius_px"],
                                 "observer_height": ctx["observer_height"],
-                                "horizon": ctx["horizon"],
+                                "horizon": horizon_ref,
                                 "batch_index": bi,
                                 "task_id": task_id,
                                 "batch_offset": offset,

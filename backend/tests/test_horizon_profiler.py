@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import rasterio
 from pyproj import Transformer
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
 from app.engine.horizon_profiler import (
+    DEFAULT_HORIZON_PASS_THRESHOLD,
     HorizonProfile,
     compute_horizon_profiles,
     horizon_fraction,
     observer_distance_along_ray,
     ray_azimuths,
+    resolve_horizon_pass_threshold,
 )
 
 CRS_25832 = CRS.from_epsg(25832)
@@ -61,10 +64,49 @@ def test_horizon_fraction_flat_is_clear_mountain_blocks():
     peak_idx = np.searchsorted(dist, 30_000)
     elev[peak_idx:] = 1500.0
     mountain = HorizonProfile(azimuth=270.0, origin_x=0.0, origin_y=0.0, distance=dist, elevation=elev)
-    assert horizon_fraction(mountain, obs_distance=0.0, eye_altitude=10.0, max_distance_km=100.0) == 0.0
+    assert (
+        horizon_fraction(
+            mountain, obs_distance=0.0, eye_altitude=10.0, max_distance_km=100.0,
+            scoring="binary",
+        )
+        == 0.0
+    )
 
     # A very high observer whose eye is above the mountain -> clear.
     assert horizon_fraction(mountain, obs_distance=0.0, eye_altitude=2000.0, max_distance_km=100.0) == 1.0
+
+
+def test_horizon_fraction_graded_scales_with_blocker_distance():
+    dist = np.arange(0, 100_100, 100, dtype=float)
+
+    def blocked_at(km: float) -> float:
+        elev = np.zeros_like(dist)
+        elev[np.searchsorted(dist, km * 1000.0):] = 1500.0
+        prof = HorizonProfile(
+            azimuth=0.0, origin_x=0.0, origin_y=0.0, distance=dist, elevation=elev
+        )
+        return horizon_fraction(
+            prof, obs_distance=0.0, eye_altitude=10.0, max_distance_km=100.0,
+            scoring="graded",
+        )
+
+    near, far = blocked_at(5.0), blocked_at(90.0)
+    # A distant blocker must score far better than a near one.
+    assert 0.0 < near < far < 1.0
+    assert near == pytest.approx(0.05, abs=0.01)
+    assert far == pytest.approx(0.90, abs=0.01)
+
+
+def test_horizon_pass_threshold_resolution(monkeypatch):
+    assert resolve_horizon_pass_threshold() == DEFAULT_HORIZON_PASS_THRESHOLD
+    assert resolve_horizon_pass_threshold(0.6) == 0.6
+    monkeypatch.setenv("HORIZON_PASS_THRESHOLD", "0.4")
+    assert resolve_horizon_pass_threshold() == 0.4
+    # Out-of-range and unparseable values stay usable.
+    monkeypatch.setenv("HORIZON_PASS_THRESHOLD", "5")
+    assert resolve_horizon_pass_threshold() == 1.0
+    monkeypatch.setenv("HORIZON_PASS_THRESHOLD", "nonsense")
+    assert resolve_horizon_pass_threshold() == DEFAULT_HORIZON_PASS_THRESHOLD
 
 
 def test_observer_distance_along_ray():

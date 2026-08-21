@@ -26,6 +26,7 @@ from app.engine.horizon_profiler import (
     horizon_fraction,
     observer_distance_along_ray,
     ray_azimuths,
+    resolve_horizon_pass_threshold,
 )
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
 
@@ -161,6 +162,6 @@ def run_viewshed_pipeline(
             clear += horizon_fraction(profiles[ray_az], obs_dist, eye_altitude, horizon_max_km)
         horizon_score = clear / len(rays)
         result["horizon_score"] = round(horizon_score, 4)
-        result["horizon_pass"] = horizon_score > 0.0
+        result["horizon_pass"] = horizon_score >= resolve_horizon_pass_threshold()
 
     return result

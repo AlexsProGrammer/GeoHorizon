@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,6 +25,9 @@ __all__ = [
     "compute_horizon_profiles",
     "observer_distance_along_ray",
     "horizon_fraction",
+    "resolve_horizon_scoring",
+    "resolve_horizon_pass_threshold",
+    "DEFAULT_HORIZON_PASS_THRESHOLD",
 ]
 
 FALLBACK_CRS_EPSG = 25832
@@ -34,6 +38,13 @@ DEFAULT_SAMPLE_SPACING_M = 100.0
 PANORAMIC_RAYS = 72
 # Directional cones use roughly one ray every N degrees.
 DEG_PER_RAY = 5.0
+
+
+# A viewpoint "passes" when its rays reach, on average, at least this share of
+# the requested horizon range. A quarter of a 100 km sweep is a 25 km mean
+# sightline: already a strong long-range viewpoint, while still rejecting spots
+# walled in by nearby terrain.
+DEFAULT_HORIZON_PASS_THRESHOLD = 0.25
 
 
 @dataclass
@@ -199,19 +210,51 @@ def observer_distance_along_ray(
     return vx * dx + vy * dy
 
 
+def resolve_horizon_scoring(scoring: str | None = None) -> str:
+    """Resolve the horizon metric from an override or ``HORIZON_SCORING``.
+
+    ``graded`` (default) reports how far along the ray the view reaches;
+    ``binary`` restores the original all-or-nothing blocked/clear result.
+    """
+    choice = (scoring or os.getenv("HORIZON_SCORING", "graded")).strip().lower()
+    return "binary" if choice == "binary" else "graded"
+
+
+def resolve_horizon_pass_threshold(threshold: float | None = None) -> float:
+    """Minimum mean horizon score for a viewpoint to count as unobstructed.
+
+    Overridable per call or via ``HORIZON_PASS_THRESHOLD``; clamped to [0, 1].
+    """
+    if threshold is None:
+        raw = os.getenv("HORIZON_PASS_THRESHOLD")
+        if raw is None:
+            threshold = DEFAULT_HORIZON_PASS_THRESHOLD
+        else:
+            try:
+                threshold = float(raw)
+            except ValueError:
+                threshold = DEFAULT_HORIZON_PASS_THRESHOLD
+    return min(1.0, max(0.0, float(threshold)))
+
+
 def horizon_fraction(
     profile: HorizonProfile,
     obs_distance: float,
     eye_altitude: float,
     max_distance_km: float = DEFAULT_MAX_DISTANCE_KM,
+    scoring: str | None = None,
 ) -> float:
-    """Whether the horizon ray is unobstructed for an observer.
+    """How much of the horizon ray the observer can see, in ``[0.0, 1.0]``.
 
     ``obs_distance`` is the observer's distance along the ray axis and
     ``eye_altitude`` is the observer's eye height (terrain MSL + height above
-    ground). The ray is blocked if any terrain beyond the observer, corrected
-    for Earth curvature, rises above eye level. Returns 1.0 if clear, 0.0 if
-    blocked. If no valid samples exist beyond the observer, assumes clear.
+    ground). Terrain beyond the observer is corrected for Earth curvature; the
+    first sample rising above eye level blocks the ray.
+
+    In ``graded`` mode the result is the share of the remaining ray length that
+    is reached before that blocker, so a peak at 5 km scores far worse than one
+    at 90 km. In ``binary`` mode any blocker yields 0.0. An unobstructed ray, or
+    one with no valid samples beyond the observer, scores 1.0.
     """
     max_dist = max_distance_km * 1000.0
     d = profile.distance
@@ -230,6 +273,13 @@ def horizon_fraction(
     dd = d[start:end] - obs_distance
     effective = e[start:end] - (dd * dd) / (2.0 * EARTH_RADIUS_M)
     # NaN nodata compares False, i.e. it is treated as non-blocking.
-    if np.any(effective > eye_altitude):
+    blocked = effective > eye_altitude
+    if not np.any(blocked):
+        return 1.0
+    if resolve_horizon_scoring(scoring) == "binary":
         return 0.0
-    return 1.0
+
+    span = float(dd[-1])
+    if span <= 0.0:
+        return 0.0
+    return float(dd[int(np.argmax(blocked))] / span)

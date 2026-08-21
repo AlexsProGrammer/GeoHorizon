@@ -28,6 +28,7 @@ from app.engine.horizon_profiler import (
     ray_azimuths,
     resolve_horizon_pass_threshold,
 )
+from app.engine.numpy_viewshed import numpy_viewshed
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed
 
 __all__ = ["run_viewshed_pipeline"]
@@ -112,8 +113,16 @@ def run_viewshed_pipeline(
         building_height_override=building_height,
     )
 
-    _emit("COMPUTING_VIEWSHED", 60, "Running WhiteboxTools")
-    visibility = calculate_viewshed(dsm, transform, crs, (obs_x, obs_y), observer_height)
+    _emit("COMPUTING_VIEWSHED", 60, "Computing line of sight")
+    # Mirrors the area-search engine choice; numpy avoids a WhiteboxTools subprocess.
+    from app.engine.area_search import resolve_engine
+
+    if resolve_engine() == "whitebox":
+        visibility = calculate_viewshed(
+            dsm, transform, crs, (obs_x, obs_y), observer_height
+        )
+    else:
+        visibility = numpy_viewshed(dsm, transform, crs, (obs_x, obs_y), observer_height)
 
     radius_px = radius_km * 1000.0 / pixel_size
     # A 360° panoramic viewshed is a full circle: no directional wedge is

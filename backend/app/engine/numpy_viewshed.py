@@ -92,6 +92,7 @@ def reference_viewshed(
     dem: np.ndarray,
     observer_coords: tuple[float, float],
     observer_height_m: float = OBSERVER_HEIGHT_DEFAULT,
+    max_radius_px: float | None = None,
 ) -> np.ndarray:
     """Viewshed for one observer on an in-memory DEM.
 
@@ -100,11 +101,17 @@ def reference_viewshed(
     ``uint8`` mask (1 = visible). Safe when the observer is outside the grid
     (returns all zeros).
 
+    ``max_radius_px`` restricts the sweep to that radius; cells beyond it stay
+    0. Only the Numba kernel honours it — the NumPy oracle always sweeps the
+    full array.
+
     Dispatches to the Numba kernel when available; both kernels implement the
     same algorithm and must agree exactly.
     """
     if resolve_kernel() == "numba":
-        return _reference_viewshed_numba(dem, observer_coords, observer_height_m)
+        return _reference_viewshed_numba(
+            dem, observer_coords, observer_height_m, max_radius_px
+        )
     return reference_viewshed_numpy(dem, observer_coords, observer_height_m)
 
 
@@ -137,11 +144,20 @@ def _cell_slope(dem, r: int, c: int, ro: int, co: int, eye):
 
 
 @njit(cache=True)
-def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
-    """Fused axis + quadrant horizon sweep; writes into ``vis`` and ``slope``."""
+def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float, max_radius_px: float) -> None:
+    """Fused axis + quadrant horizon sweep; writes into ``vis`` and ``slope``.
+
+    With ``max_radius_px >= 0`` only cells inside that radius are swept. This is
+    exact: an in-circle cell's horizon depends solely on cells nearer the
+    observer along the same row/column, which are also in-circle. ``vis`` must
+    be zero-initialised; ``slope`` need not be, since every read here follows a
+    write in the same call.
+    """
     h, w = dem.shape
     neg_inf = np.float32(-np.inf)
     eye = np.float32(eye_in)
+    unlimited = max_radius_px < 0.0
+    r_sq = max_radius_px * max_radius_px
 
     vis[ro, co] = 1
     slope[ro, co] = 0.0
@@ -149,6 +165,8 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
     # --- half axes, outward from the observer ---
     run = neg_inf
     for r in range(ro - 1, -1, -1):
+        if not unlimited and (ro - r) > max_radius_px:
+            break
         s = _cell_slope(dem, r, co, ro, co, eye)
         ref = run
         if s > run:
@@ -158,6 +176,8 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
 
     run = neg_inf
     for r in range(ro + 1, h):
+        if not unlimited and (r - ro) > max_radius_px:
+            break
         s = _cell_slope(dem, r, co, ro, co, eye)
         ref = run
         if s > run:
@@ -167,6 +187,8 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
 
     run = neg_inf
     for c in range(co - 1, -1, -1):
+        if not unlimited and (co - c) > max_radius_px:
+            break
         s = _cell_slope(dem, ro, c, ro, co, eye)
         ref = run
         if s > run:
@@ -176,6 +198,8 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
 
     run = neg_inf
     for c in range(co + 1, w):
+        if not unlimited and (c - co) > max_radius_px:
+            break
         s = _cell_slope(dem, ro, c, ro, co, eye)
         ref = run
         if s > run:
@@ -188,12 +212,20 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
     for quadrant in range(4):
         rsgn = 1 if quadrant < 2 else -1
         east = quadrant % 2 == 0
-        r_start = ro + rsgn
-        while 0 <= r_start < h:
-            r = r_start
+        r = ro + rsgn
+        while 0 <= r < h:
+            dr = r - ro if r > ro else ro - r
+            if not unlimited and dr > max_radius_px:
+                break
+            if unlimited:
+                c_lo, c_hi = 0, w
+            else:
+                span = r_sq - float(dr) * float(dr)
+                half = int(math.sqrt(span)) if span > 0.0 else 0
+                c_lo, c_hi = max(0, co - half), min(w, co + half + 1)
             run = slope[r, co]
             if east:
-                for c in range(co + 1, w):
+                for c in range(co + 1, c_hi):
                     up = slope[r - rsgn, c]
                     s = _cell_slope(dem, r, c, ro, co, eye)
                     v = s if s > up else up
@@ -203,7 +235,7 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
                     vis[r, c] = 1 if s > ref else 0
                     slope[r, c] = run
             else:
-                for c in range(co - 1, -1, -1):
+                for c in range(co - 1, c_lo - 1, -1):
                     up = slope[r - rsgn, c]
                     s = _cell_slope(dem, r, c, ro, co, eye)
                     v = s if s > up else up
@@ -212,20 +244,21 @@ def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
                         run = v
                     vis[r, c] = 1 if s > ref else 0
                     slope[r, c] = run
-            r_start += rsgn
+            r += rsgn
 
 
 def _reference_viewshed_numba(
     dem: np.ndarray,
     observer_coords: tuple[float, float],
     observer_height_m: float = OBSERVER_HEIGHT_DEFAULT,
+    max_radius_px: float | None = None,
 ) -> np.ndarray:
     prepared, vis = _prepare(dem, observer_coords, observer_height_m)
     if prepared is None:
         return vis
     dem_c, ro, co, eye = prepared
-    slope = np.full(dem_c.shape, -np.inf, dtype=WORK_DTYPE)
-    _sweep(dem_c, vis, slope, ro, co, eye)
+    slope = np.empty(dem_c.shape, dtype=WORK_DTYPE)
+    _sweep(dem_c, vis, slope, ro, co, eye, -1.0 if max_radius_px is None else float(max_radius_px))
     return vis
 
 

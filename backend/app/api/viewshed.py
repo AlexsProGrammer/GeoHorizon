@@ -69,15 +69,20 @@ async def area_search(payload: AreaSearchRequest):
 
 @router.get("/result/{task_id}")
 async def get_result(task_id: str):
-    """Return the scored GeoJSON FeatureCollection of a viewshed / area task.
+    """Return the result of a viewshed / area task.
 
-    Both single-point and area-search tasks now produce the same scored GeoJSON
-    result (green/yellow/red quality bands), persisted at ``area_{task_id}.json``.
+    Area search (and the frontend's point mode, which wraps a circle around the
+    click) yields a scored GeoJSON FeatureCollection. The single-observer
+    pipeline (``POST /viewshed/start``) instead yields overlay metadata pointing
+    at ``GET /viewshed/overlay/{task_id}.png``.
     """
     result: AsyncResult = celery_app.AsyncResult(task_id)
     result_path = PROCESSED_DIR / f"area_{task_id}.json"
     if result_path.exists():
         return json.loads(result_path.read_text())
+    viewshed_path = PROCESSED_DIR / f"viewshed_{task_id}.json"
+    if viewshed_path.exists():
+        return json.loads(viewshed_path.read_text())
     if result.state == "FAILURE":
         raise HTTPException(status_code=500, detail=str(result.info))
     # Favour the Celery result payload when the file is missing but available.
@@ -89,6 +94,19 @@ async def get_result(task_id: str):
     # SUCCESS with no file means the chord orchestrator returned early and the
     # merge callback has not persisted the result yet -> still in progress.
     raise HTTPException(status_code=202, detail="Task not finished yet")
+
+
+@router.get("/overlay/{task_id}.png")
+async def overlay(task_id: str):
+    """Return the single-observer visibility overlay as a translucent PNG."""
+    path = PROCESSED_DIR / f"viewshed_{task_id}.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No overlay for this task")
+    return Response(
+        content=path.read_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 @router.get("/area-result/{task_id}")
@@ -105,8 +123,10 @@ async def status(task_id: str):
     # written by the merge callback afterwards. Report SUCCESS to the frontend
     # only once the result file actually exists, so polling doesn't race ahead
     # of the merge and try to read a not-yet-written result.
-    result_path = PROCESSED_DIR / f"area_{task_id}.json"
-    if result.state == "SUCCESS" and not result_path.exists():
+    persisted = (PROCESSED_DIR / f"area_{task_id}.json").exists() or (
+        PROCESSED_DIR / f"viewshed_{task_id}.json"
+    ).exists()
+    if result.state == "SUCCESS" and not persisted:
         return {
             "task_id": task_id,
             "state": "STARTED",
@@ -148,8 +168,13 @@ async def cancel(task_id: str):
     out_path = PROCESSED_DIR / f"area_{task_id}.json"
     if out_path.exists():
         out_path.unlink()
-    for suffix in ("_dsm.npy", "_dem.npy"):
-        scratch = PROCESSED_DIR / f"area_{task_id}{suffix}"
+    for name in (
+        f"area_{task_id}_dsm.npy",
+        f"area_{task_id}_dem.npy",
+        f"viewshed_{task_id}.json",
+        f"viewshed_{task_id}.png",
+    ):
+        scratch = PROCESSED_DIR / name
         if scratch.exists():
             scratch.unlink()
 

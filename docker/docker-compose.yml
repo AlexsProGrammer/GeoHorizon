@@ -43,6 +43,7 @@ services:
       - "8000:8000"
     volumes:
       - ../data:/data
+      - ../backend:/app
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}
@@ -63,6 +64,7 @@ services:
     container_name: geohorizon-worker
     volumes:
       - ../data:/data
+      - ../backend:/app
     environment:
       DATABASE_URL: ${DATABASE_URL}
       REDIS_URL: ${REDIS_URL}

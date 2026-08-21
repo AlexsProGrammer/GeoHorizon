@@ -357,6 +357,7 @@ def _score_point_cropped(
     y: float,
     observer_height: float,
     radius: int,
+    radius_px: float,
     sector_id: np.ndarray | None,
     sector_totals: np.ndarray | None,
     cone_stencil: np.ndarray | None,
@@ -376,7 +377,9 @@ def _score_point_cropped(
     (r_lo, r_hi, c_lo, c_hi), (sr_lo, sr_hi, sc_lo, sc_hi) = windows
 
     sub = dsm[r_lo:r_hi, c_lo:c_hi]
-    vis = reference_viewshed(sub, (row_i - r_lo, col_i - c_lo), observer_height)
+    vis = reference_viewshed(
+        sub, (row_i - r_lo, col_i - c_lo), observer_height, max_radius_px=radius_px
+    )
 
     if sector_id is not None and sector_totals is not None:
         sectors = sector_id[sr_lo:sr_hi, sc_lo:sc_hi]
@@ -473,6 +476,7 @@ def process_points_batch(
                 y,
                 observer_height,
                 radius,
+                radius_px,
                 sector_id,
                 sector_totals,
                 cone_stencil,
@@ -499,15 +503,20 @@ def process_points_batch(
                 )
                 score = score_viewshed(visibility, cone)
 
+        properties: dict = {"score": 0.0}
         if horizon_profiles is not None:
             eye_altitude = _dem_elevation(elevation_source, transform, x, y) + observer_height
-            score *= _horizon_multiplier(horizon, horizon_profiles, x, y, eye_altitude)
+            multiplier = _horizon_multiplier(horizon, horizon_profiles, x, y, eye_altitude)
+            score *= multiplier
+            # Surfaced so the horizon pass threshold can be tuned from real runs.
+            properties["horizon"] = round(multiplier, 4)
 
+        properties["score"] = round(score, 4)
         lng, lat = to_wgs84.transform(x, y)
         features.append(
             {
                 "type": "Feature",
-                "properties": {"score": round(score, 4)},
+                "properties": properties,
                 "geometry": {"type": "Point", "coordinates": [round(lng, 6), round(lat, 6)]},
             }
         )

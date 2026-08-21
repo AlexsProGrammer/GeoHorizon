@@ -19,6 +19,8 @@ from app.engine.area_search import (
     process_points_batch,
     resolve_engine,
 )
+from app.engine.overlay import visibility_overlay_png
+from app.engine.pipeline import run_viewshed_pipeline
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT
 from app.worker import celery_app
 
@@ -182,10 +184,7 @@ def run_area_search_task(self, params: dict):
 def _circle_polygon_wgs84(lng: float, lat: float, radius_km: float, num_points: int = 64) -> dict:
     """Build a WGS84 circular GeoJSON polygon centred on ``(lng, lat)``.
 
-    Used by single-point mode so it can reuse the same multi-point area-search
-    engine: the clicked observation point becomes the centre of a circular
-    search area of the given radius, and nearby grid points are scored as
-    candidate viewpoints.
+    Lets a point-centred request reuse the multi-point area-search engine.
     """
     radius_m = radius_km * 1000.0
     meters_per_deg_lat = 111320.0
@@ -430,20 +429,71 @@ def _persist_area_result(task_id: str, fc: dict) -> None:
 
 @celery_app.task(bind=True, name="viewshed.run_pipeline")
 def run_viewshed_task(self, params: dict):
-    """Single-point viewshed, unified with the area-search result format.
+    """Single-observer viewshed: an exact visibility raster from one point.
 
-    The clicked observation point is wrapped in a circular search area of the
-    configured radius and the same multi-point engine scores the nearby grid
-    points as candidate viewpoints. The output is a scored GeoJSON
-    FeatureCollection (green/yellow/red quality bands), identical to area mode —
-    instead of the old single PNG overlay. Directional vs 360° scoring is
-    controlled by ``fov`` (>= 360 → panoramic).
+    Complements area search (which ranks many candidate points): this renders
+    what is actually visible from the clicked position as a map overlay, plus
+    the long-range horizon verdict. Persists ``viewshed_{task_id}.png`` and
+    ``viewshed_{task_id}.json``; the latter is what ``GET /viewshed/result``
+    returns for this mode.
     """
     task_id = self.request.id
-    circle = _circle_polygon_wgs84(
-        params["lng"], params["lat"], params["radius_km"]
-    )
-    area_params = dict(params)
-    area_params["search_area"] = circle
-    area_params.setdefault("grid_step_m", 50.0)
-    return _run_area_search_for_task(task_id, area_params)
+
+    def progress(status: str, pct: int, step: str) -> None:
+        _publish_progress(task_id, status, pct, step)
+
+    progress("STARTED", 5, "Starting viewshed")
+    session = SessionLocal()
+    try:
+        result = run_viewshed_pipeline(
+            session,
+            cog_path=params["cog_path"],
+            lat=params["lat"],
+            lng=params["lng"],
+            radius_km=params["radius_km"],
+            azimuth=params["azimuth"],
+            fov=params["fov"],
+            observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
+            tree_height=params.get("tree_height", 30.0),
+            building_height=params.get("building_height", 15.0),
+            horizon_enabled=params.get("horizon_enabled", False),
+            horizon_max_km=params.get("horizon_max_km", 100.0),
+            horizon_cache_dir=str(PROCESSED_DIR / "horizon_cache"),
+            progress_callback=progress,
+        )
+
+        progress("RENDERING", 92, "Rendering overlay")
+        png, overlay_bounds = visibility_overlay_png(
+            result["visibility"], result["transform"], result["crs"]
+        )
+
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        (PROCESSED_DIR / f"viewshed_{task_id}.png").write_bytes(png)
+
+        meta = {
+            "type": "Viewshed",
+            "task_id": task_id,
+            "overlay_url": f"/api/viewshed/overlay/{task_id}.png",
+            "overlay_bounds": overlay_bounds,
+            "observer": [params["lng"], params["lat"]],
+            "radius_km": params["radius_km"],
+            "azimuth": params["azimuth"],
+            "fov": params["fov"],
+            "visible_ratio": round(
+                float(np.count_nonzero(result["visibility"])) / result["visibility"].size, 4
+            )
+            if result["visibility"].size
+            else 0.0,
+        }
+        if "horizon_score" in result:
+            meta["horizon_score"] = result["horizon_score"]
+            meta["horizon_pass"] = result["horizon_pass"]
+
+        (PROCESSED_DIR / f"viewshed_{task_id}.json").write_text(json.dumps(meta))
+        progress("SUCCESS", 100, "Complete")
+        return meta
+    except Exception as exc:
+        progress("FAILURE", 0, f"Viewshed failed: {exc}")
+        raise
+    finally:
+        session.close()

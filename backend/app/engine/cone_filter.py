@@ -37,12 +37,15 @@ def build_sector_stencil(
     the sector each cell belongs to (``-1`` outside the radius), and the number
     of cells per sector. Scoring a point then costs one ``bincount`` instead of
     ``directions`` full-grid mask constructions.
+
+    Sector ``k`` is *centred* on azimuth ``k * 360/directions`` to match the
+    cones :func:`create_directional_mask` builds in the full-window path.
     """
     n = max(1, int(directions))
+    slice_deg = 360.0 / n
     r, dy, dx, bearing = _offset_grids(radius_px)
     inside = (dx * dx + dy * dy) <= radius_px * radius_px
-    sector = (bearing / (360.0 / n)).astype(np.int16)
-    np.clip(sector, 0, n - 1, out=sector)
+    sector = (np.floor((bearing + slice_deg / 2.0) / slice_deg).astype(np.int16)) % n
     sector[~inside] = -1
     totals = np.bincount(sector[inside].ravel(), minlength=n).astype(np.float64)
     return sector, totals

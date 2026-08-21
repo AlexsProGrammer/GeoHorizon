@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import geopandas as gpd
 import numpy as np
+import pytest
 import rasterio
 from pyproj import Transformer
 from rasterio.crs import CRS
@@ -138,6 +139,47 @@ def test_area_search_writes_dsm_once_and_threads_path(tmp_path, monkeypatch):
     assert len(seen_dsm_paths) == 1
     assert seen_dsm_paths == {dsm_writes[0]}
     assert fc["meta"]["count"] == len(calls)
+
+
+def test_cropped_scoring_matches_full_window(monkeypatch):
+    """The cropped + stencil path must reproduce the original full-window path.
+
+    Observers sit on pixel centres so both paths build identical cone geometry.
+    The single-cone case is then exact; the panoramic case differs only where a
+    cell lands exactly on a sector boundary (diagonals), which the full-window
+    path counted in both neighbouring cones and the stencil assigns to one.
+    """
+    from app.engine.numpy_viewshed import numpy_viewshed
+
+    rng = np.random.default_rng(3)
+    dsm = (rng.random((160, 160)) * 40.0).astype(np.float32)
+    dsm += np.arange(160, dtype=np.float32)[:, None] * 0.5
+
+    # Far enough from the border that a 40 px radius never clips the window.
+    pts = [
+        (500000 + (c + 0.5) * 10, 5500200 - (r + 0.5) * 10)
+        for r in (60, 80, 100)
+        for c in (60, 80, 100)
+    ]
+
+    monkeypatch.setattr(
+        area,
+        "calculate_viewshed",
+        lambda d, t, c, obs, height, **kw: numpy_viewshed(d, t, c, obs, height),
+    )
+
+    common = dict(azimuth=270.0, radius_px=40.0, observer_height=1.8, panoramic_directions=12)
+    for fov, tol in ((90.0, 1e-9), (360.0, 0.02)):
+        cropped = area.process_points_batch(
+            dsm, TRANSFORM, CRS_25832, pts, mask_fov=fov, engine="numpy", **common
+        )
+        full = area.process_points_batch(
+            dsm, TRANSFORM, CRS_25832, pts, mask_fov=fov, engine="whitebox", **common
+        )
+        for a, b in zip(cropped, full):
+            assert a["properties"]["score"] == pytest.approx(
+                b["properties"]["score"], abs=tol
+            ), f"fov={fov} at {a['geometry']['coordinates']}"
 
 
 def test_batched_result_matches_serial(tmp_path, monkeypatch):

@@ -148,9 +148,10 @@ async def cancel(task_id: str):
     out_path = PROCESSED_DIR / f"area_{task_id}.json"
     if out_path.exists():
         out_path.unlink()
-    dsm_path = PROCESSED_DIR / f"area_{task_id}_dsm.npy"
-    if dsm_path.exists():
-        dsm_path.unlink()
+    for suffix in ("_dsm.npy", "_dem.npy"):
+        scratch = PROCESSED_DIR / f"area_{task_id}{suffix}"
+        if scratch.exists():
+            scratch.unlink()
 
     return {"task_id": task_id, "status": "CANCELLED"}
 

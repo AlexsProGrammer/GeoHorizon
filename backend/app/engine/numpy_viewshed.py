@@ -36,6 +36,10 @@ __all__ = [
 
 OBSERVER_HEIGHT_DEFAULT = 1.8
 
+# The kernel is memory-bandwidth bound and elevation is metre-scale, so float32
+# is both sufficient and roughly twice as fast as float64.
+WORK_DTYPE = np.float32
+
 
 def _observer_pixel(transform, observer_coords: tuple[float, float]) -> tuple[float, float]:
     """Map world coordinates to a fractional (col, row) pixel index."""
@@ -46,13 +50,13 @@ def _observer_pixel(transform, observer_coords: tuple[float, float]) -> tuple[fl
 def _slope_matrix(dem: np.ndarray, ro: int, co: int, eye: float) -> np.ndarray:
     """Per-cell slope ``(elevation - eye)/distance`` about the observer pixel."""
     h, w = dem.shape
-    rows = np.arange(h, dtype=np.float64)
-    cols = np.arange(w, dtype=np.float64)
+    rows = np.arange(h, dtype=WORK_DTYPE)
+    cols = np.arange(w, dtype=WORK_DTYPE)
     dr = rows[:, None] - ro
     dc = cols[None, :] - co
     dist = np.hypot(dc, dr)
-    dist = np.maximum(dist, 1e-9)
-    return (dem - eye) / dist
+    dist = np.maximum(dist, WORK_DTYPE(1e-9))
+    return (dem - WORK_DTYPE(eye)) / dist
 
 
 def reference_viewshed(
@@ -67,7 +71,7 @@ def reference_viewshed(
     ``uint8`` mask (1 = visible). Safe when the observer is outside the grid
     (returns all zeros).
     """
-    dem = np.asarray(dem, dtype=np.float64)
+    dem = np.asarray(dem, dtype=WORK_DTYPE)
     h, w = dem.shape
     vis = np.zeros((h, w), dtype=np.uint8)
     if h == 0 or w == 0:
@@ -83,7 +87,7 @@ def reference_viewshed(
 
     # slope per cell about the observer (used for axes and quadrant rows)
     s_full = _slope_matrix(dem, ro, co, eye)
-    slope = np.full((h, w), -np.inf, dtype=np.float64)
+    slope = np.full((h, w), -np.inf, dtype=WORK_DTYPE)
     vis[ro, co] = 1
     slope[ro, co] = 0.0
 
@@ -125,7 +129,7 @@ def reference_viewshed(
             s = s_full[r, c]
             seed = slope[r, co]  # nearer axis value carried at this row
             vals = np.maximum(s, up)
-            seeded = np.empty(vals.size + 1)
+            seeded = np.empty(vals.size + 1, dtype=WORK_DTYPE)
             seeded[0] = seed
             seeded[1:] = vals
             running = np.maximum.accumulate(seeded)
@@ -181,7 +185,7 @@ def numpy_viewshed_multi(
     Stations are computed sequentially; use Celery workers (or an external
     pool) to parallelize across stations.
     """
-    dsm = np.asarray(dsm, dtype=np.float64)
+    dsm = np.asarray(dsm, dtype=WORK_DTYPE)
     rows, cols = dsm.shape
     out = np.zeros((len(stations), rows, cols), dtype=np.uint8)
     for i, coords in enumerate(stations):

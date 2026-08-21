@@ -69,9 +69,21 @@ def _worker_slot_count() -> int:
 
 
 def _split_batches(points: list, n_batches: int):
-    """Split ``points`` into ``n_batches`` roughly-equal round-robin groups."""
+    """Split ``points`` into ``n_batches`` contiguous, roughly-equal groups.
+
+    Contiguous (not round-robin) so neighbouring observers land in the same
+    batch and reuse the same mmap pages of the shared DSM; every point now
+    costs the same fixed-size window, so load stays balanced anyway.
+    """
     n = max(1, min(n_batches, len(points)))
-    return [list(points[i::n]) for i in range(n)]
+    size, extra = divmod(len(points), n)
+    batches = []
+    start = 0
+    for i in range(n):
+        end = start + size + (1 if i < extra else 0)
+        batches.append(list(points[start:end]))
+        start = end
+    return batches
 
 
 def _horizon_redis_key(task_id: str) -> str:
@@ -124,7 +136,10 @@ def run_area_search_batch_task(self, params: dict):
     batch's slice of grid points. Returns ``{"features": [...], "batch_index": n}``
     which the orchestrator merges in order.
     """
-    dsm = np.load(params["dsm_path"])
+    # mmap so all forked workers share one set of physical pages for the DSM/DEM.
+    dsm = np.load(params["dsm_path"], mmap_mode="r")
+    dem_path = params.get("dem_path")
+    dem = np.load(dem_path, mmap_mode="r") if dem_path else None
     transform = Affine(*params["transform"])
     crs = CRS.from_user_input(params["crs"])
     horizon = _load_horizon(params.get("horizon"))
@@ -144,6 +159,7 @@ def run_area_search_batch_task(self, params: dict):
         horizon=horizon,
         engine="numpy",
         panoramic_directions=params.get("panoramic_directions", 12),
+        dem=dem,
         progress_callback=progress,
         offset=params.get("batch_offset", 0),
         global_total=params.get("global_total"),
@@ -186,7 +202,12 @@ def _circle_polygon_wgs84(lng: float, lat: float, radius_km: float, num_points: 
 
 @celery_app.task(name="viewshed.merge_area_search")
 def merge_area_search_results(
-    results: list, task_id: str, dsm_path: str | None, crs_str: str, total: int
+    results: list,
+    task_id: str,
+    dsm_path: str | None,
+    crs_str: str,
+    total: int,
+    dem_path: str | None = None,
 ) -> dict:
     """Chord callback that merges all area-search batch results and persists them.
 
@@ -212,11 +233,12 @@ def merge_area_search_results(
         _publish_progress(task_id, "FAILURE", 0, f"Area search failed: {exc}")
         raise
     finally:
-        if dsm_path:
-            try:
-                Path(dsm_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        for p in (dsm_path, dem_path):
+            if p:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     _publish_progress(task_id, "SUCCESS", 100, "Complete")
     return {
@@ -282,8 +304,10 @@ def _run_area_search_for_task(task_id: str, params: dict) -> dict:
         # the shared DSM before the batches loaded it).
         if engine == "numpy" and slots > 1 and total >= 2:
             dsm_path = PROCESSED_DIR / f"area_{task_id}_dsm.npy"
+            dem_path = PROCESSED_DIR / f"area_{task_id}_dem.npy"
             try:
                 np.save(dsm_path, ctx["dsm"])
+                np.save(dem_path, ctx["dem"])
                 transform_tuple = tuple(ctx["transform"])
                 n_batches = min(slots - 1, total)
                 batches = _split_batches(ctx["points"], n_batches)
@@ -301,6 +325,7 @@ def _run_area_search_for_task(task_id: str, params: dict) -> dict:
                         run_area_search_batch_task.s(
                             {
                                 "dsm_path": str(dsm_path),
+                                "dem_path": str(dem_path),
                                 "transform": transform_tuple,
                                 "crs": crs_str,
                                 "points": batch,
@@ -323,12 +348,14 @@ def _run_area_search_for_task(task_id: str, params: dict) -> dict:
                     merge_area_search_results.s(
                         task_id=task_id,
                         dsm_path=str(dsm_path),
+                        dem_path=str(dem_path),
                         crs_str=crs_str,
                         total=total,
                     )
                 )
             except Exception:
                 dsm_path.unlink(missing_ok=True)
+                dem_path.unlink(missing_ok=True)
                 raise
 
             return {
@@ -365,6 +392,7 @@ def _run_area_search_for_task(task_id: str, params: dict) -> dict:
                 engine=engine,
                 dsm_path=dsm_path,
                 panoramic_directions=ctx["panoramic_directions"],
+                dem=ctx["dem"],
                 progress_callback=progress,
                 offset=0,
                 global_total=total,

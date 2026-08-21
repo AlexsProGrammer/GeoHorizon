@@ -8,7 +8,55 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["create_directional_mask", "precompute_cone_geometry"]
+__all__ = [
+    "create_directional_mask",
+    "precompute_cone_geometry",
+    "build_sector_stencil",
+    "build_cone_stencil",
+]
+
+
+def _offset_grids(radius_px: float) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+    """Observer-relative ``(radius, d_row, d_col, bearing)`` grids.
+
+    Cone geometry depends only on the offset from the observer, never on its
+    absolute position, so these can be built once and reused for every point.
+    """
+    r = max(0, int(np.ceil(radius_px)))
+    dy, dx = np.mgrid[-r : r + 1, -r : r + 1].astype(np.float64)
+    bearing = np.degrees(np.arctan2(dx, -dy)) % 360.0
+    return r, dy, dx, bearing
+
+
+def build_sector_stencil(
+    radius_px: float, directions: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sector-index stencil for panoramic scoring, in observer-relative space.
+
+    Returns ``(sector_id, totals)``: an ``int16`` ``(2r+1, 2r+1)`` array holding
+    the sector each cell belongs to (``-1`` outside the radius), and the number
+    of cells per sector. Scoring a point then costs one ``bincount`` instead of
+    ``directions`` full-grid mask constructions.
+    """
+    n = max(1, int(directions))
+    r, dy, dx, bearing = _offset_grids(radius_px)
+    inside = (dx * dx + dy * dy) <= radius_px * radius_px
+    sector = (bearing / (360.0 / n)).astype(np.int16)
+    np.clip(sector, 0, n - 1, out=sector)
+    sector[~inside] = -1
+    totals = np.bincount(sector[inside].ravel(), minlength=n).astype(np.float64)
+    return sector, totals
+
+
+def build_cone_stencil(
+    radius_px: float, azimuth_deg: float, fov_deg: float
+) -> tuple[np.ndarray, int]:
+    """Boolean cone stencil in observer-relative space, plus its cell count."""
+    r, dy, dx, bearing = _offset_grids(radius_px)
+    delta = np.abs(bearing - azimuth_deg % 360.0)
+    delta = np.minimum(delta, 360.0 - delta)
+    inside = (delta <= fov_deg / 2.0) & (np.hypot(dx, dy) <= radius_px)
+    return inside, int(np.count_nonzero(inside))
 
 
 def precompute_cone_geometry(

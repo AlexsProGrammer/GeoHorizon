@@ -53,7 +53,7 @@ def crop_dem_window(cog_path: str, bbox: tuple) -> tuple[np.ndarray, Any, Any]:
     """
     with rasterio.open(cog_path) as src:
         win: Window = from_bounds(*bbox, transform=src.transform)
-        array = src.read(1, window=win)
+        array = src.read(1, window=win).astype(np.float32)
         win_transform = transform(win, src.transform)
         return array, win_transform, src.crs
 
@@ -99,7 +99,7 @@ def _rasterize_obstacles(
     height_override: float | None,
 ) -> np.ndarray:
     """Rasterize a GeoDataFrame of polygons into a height mask matching ``transform``."""
-    mask = np.zeros(out_shape, dtype=np.float64)
+    mask = np.zeros(out_shape, dtype=np.float32)
     if gdf is None or gdf.empty:
         return mask
 
@@ -123,7 +123,7 @@ def _rasterize_obstacles(
             transform=transform,
             fill=0,
             all_touched=True,
-            dtype=np.float64,
+            dtype=np.float32,
         )
     return mask
 
@@ -140,7 +140,9 @@ def build_dsm(
     """Combine the DEM with rasterized obstacle heights element-wise.
 
     ``dsm = dem + tree_mask + building_mask``. Obstacles are reprojected into
-    the DEM's CRS (``crs``) before rasterization.
+    the DEM's CRS (``crs``) before rasterization. The result is ``float32``:
+    metre-scale elevation needs nowhere near float64 precision and the viewshed
+    kernel is memory-bandwidth bound.
     """
     out_shape = dem_array.shape
 
@@ -151,4 +153,4 @@ def build_dsm(
         buildings_gdf, transform, out_shape, crs, BUILDING_DEFAULT_HEIGHT, building_height_override
     )
 
-    return dem_array.astype(np.float64) + tree_mask + building_mask
+    return dem_array.astype(np.float32) + tree_mask + building_mask

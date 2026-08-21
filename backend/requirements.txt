@@ -9,7 +9,7 @@ rasterio
 rio-cogeo
 pyrosm
 geopandas
-shapely
+shapely>=2.0
 pyproj
 scipy
 whitebox

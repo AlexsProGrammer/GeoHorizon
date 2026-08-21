@@ -19,8 +19,9 @@ from typing import Callable
 
 import numpy as np
 import rasterio
+import shapely
 from pyproj import CRS, Transformer
-from shapely.geometry import Point, box
+from shapely.geometry import box
 from shapely.geometry import shape as shape_from_geojson
 from shapely.ops import transform as shp_transform
 
@@ -37,6 +38,7 @@ from app.engine.horizon_profiler import (
     observer_distance_along_ray,
     ray_azimuths,
 )
+from app.engine.numpy_viewshed import reference_viewshed
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT, calculate_viewshed, write_dsm
 
 __all__ = [
@@ -92,16 +94,18 @@ def sample_grid_points(search_area, grid_step_m: float) -> list[tuple]:
     spaced ``grid_step_m`` apart and only kept when inside the polygon.
     """
     minx, miny, maxx, maxy = search_area.bounds
-    points: list[tuple] = []
-    x = minx
-    while x <= maxx:
-        y = miny
-        while y <= maxy:
-            if search_area.contains(Point(x, y)):
-                points.append((x, y))
-            y += grid_step_m
-        x += grid_step_m
-    return points
+    if grid_step_m <= 0:
+        return []
+    xs = np.arange(minx, maxx + grid_step_m * 1e-9, grid_step_m)
+    ys = np.arange(miny, maxy + grid_step_m * 1e-9, grid_step_m)
+    if xs.size == 0 or ys.size == 0:
+        return []
+    # Column-major so the ordering matches the previous x-outer/y-inner loop.
+    gx, gy = np.meshgrid(xs, ys, indexing="ij")
+    gx = gx.ravel()
+    gy = gy.ravel()
+    inside = shapely.contains_xy(search_area, gx, gy)
+    return list(zip(gx[inside].tolist(), gy[inside].tolist()))
 
 
 def score_viewshed(visibility: np.ndarray, cone: np.ndarray) -> float:
@@ -295,24 +299,106 @@ def prepare_area_search(
     }
 
 
-def _horizon_multiplier(horizon: dict, x: float, y: float, eye_altitude: float) -> float:
-    rays = horizon["rays"]
+def _prepare_horizon_profiles(horizon: dict) -> dict[float, HorizonProfile]:
+    """Materialize the JSON-serialised horizon profiles into arrays once."""
     ox = horizon["origin_x"]
     oy = horizon["origin_y"]
-    max_km = horizon["max_km"]
-    clear = 0.0
-    for az in rays:
+    prepared: dict[float, HorizonProfile] = {}
+    for az in horizon["rays"]:
         p = horizon["profiles"][str(az)]
-        obs_dist = observer_distance_along_ray(az, ox, oy, x, y)
-        prof = HorizonProfile(
+        prepared[az] = HorizonProfile(
             azimuth=az,
             origin_x=ox,
             origin_y=oy,
             distance=np.asarray(p["distance"], dtype=np.float64),
             elevation=np.asarray(p["elevation"], dtype=np.float64),
         )
-        clear += horizon_fraction(prof, obs_dist, eye_altitude, max_km)
+    return prepared
+
+
+def _horizon_multiplier(
+    horizon: dict,
+    profiles: dict[float, HorizonProfile],
+    x: float,
+    y: float,
+    eye_altitude: float,
+) -> float:
+    rays = horizon["rays"]
+    ox = horizon["origin_x"]
+    oy = horizon["origin_y"]
+    max_km = horizon["max_km"]
+    clear = 0.0
+    for az in rays:
+        obs_dist = observer_distance_along_ray(az, ox, oy, x, y)
+        clear += horizon_fraction(profiles[az], obs_dist, eye_altitude, max_km)
     return clear / len(rays)
+
+
+def _stencil_windows(
+    shape: tuple, radius: int, row: int, col: int
+) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]] | None:
+    """Matching (dsm_slice, stencil_slice) bounds for an observer pixel.
+
+    Both are clipped to the DSM; ``None`` when the observer lies outside it.
+    """
+    h, w = shape
+    if not (0 <= row < h and 0 <= col < w):
+        return None
+    r_lo, r_hi = max(0, row - radius), min(h, row + radius + 1)
+    c_lo, c_hi = max(0, col - radius), min(w, col + radius + 1)
+    top, left = row - radius, col - radius
+    return (r_lo, r_hi, c_lo, c_hi), (r_lo - top, r_hi - top, c_lo - left, c_hi - left)
+
+
+def _score_point_cropped(
+    dsm: np.ndarray,
+    transform,
+    x: float,
+    y: float,
+    observer_height: float,
+    radius: int,
+    sector_id: np.ndarray | None,
+    sector_totals: np.ndarray | None,
+    cone_stencil: np.ndarray | None,
+    cone_total: int,
+) -> float:
+    """Score one observer using only the (2r+1)^2 window it can actually see.
+
+    Denominators are recomputed from the clipped stencil when the window runs
+    off the DSM, matching the full-window path where off-map cells were absent
+    from both the numerator and the denominator.
+    """
+    col, row = ~transform * (x, y)
+    row_i, col_i = int(round(row)), int(round(col))
+    windows = _stencil_windows(dsm.shape, radius, row_i, col_i)
+    if windows is None:
+        return 0.0
+    (r_lo, r_hi, c_lo, c_hi), (sr_lo, sr_hi, sc_lo, sc_hi) = windows
+
+    sub = dsm[r_lo:r_hi, c_lo:c_hi]
+    vis = reference_viewshed(sub, (row_i - r_lo, col_i - c_lo), observer_height)
+
+    if sector_id is not None and sector_totals is not None:
+        sectors = sector_id[sr_lo:sr_hi, sc_lo:sc_hi]
+        inside = sectors >= 0
+        totals = (
+            sector_totals
+            if sectors.shape == sector_id.shape
+            else np.bincount(sectors[inside], minlength=sector_totals.size).astype(np.float64)
+        )
+        counts = np.bincount(
+            sectors[inside & (vis > 0)], minlength=sector_totals.size
+        ).astype(np.float64)
+        ratios = np.divide(counts, totals, out=np.zeros_like(totals), where=totals > 0)
+        return float(ratios.mean())
+
+    if cone_stencil is None:
+        return 0.0
+    cone = cone_stencil[sr_lo:sr_hi, sc_lo:sc_hi]
+    total = cone_total if cone.shape == cone_stencil.shape else int(np.count_nonzero(cone))
+    if total == 0:
+        return 0.0
+    return float(np.count_nonzero((vis > 0) & cone)) / total
 
 
 def process_points_batch(
@@ -328,6 +414,7 @@ def process_points_batch(
     engine: str = DEFAULT_VIEWSHED_ENGINE,
     dsm_path: str | None = None,
     panoramic_directions: int = 12,
+    dem: np.ndarray | None = None,
     progress_callback: Callable[[str, int, str], None] | None = None,
     offset: int = 0,
     global_total: int | None = None,
@@ -335,51 +422,86 @@ def process_points_batch(
     """Compute scored GeoJSON Features for a batch of grid points against a shared DSM.
 
     ``points`` are ``(x, y)`` projected coordinates. ``transform``/``crs``
-    describe the DSM's georeferencing. If ``engine`` is the in-memory numpy
-    engine no disk is used; for the WhiteboxTools engine a pre-written
-    ``dsm_path`` (GeoTIFF) is reused across the batch to avoid re-serializing it.
+    describe the DSM's georeferencing. The numpy engine evaluates each observer
+    against a cropped ``(2*radius_px+1)^2`` window and scores it with a
+    precomputed observer-relative stencil, so no work is spent on cells outside
+    the view radius and no per-point trigonometry is needed. The WhiteboxTools
+    engine keeps the original full-window path and reuses a pre-written
+    ``dsm_path`` GeoTIFF across the batch.
+
+    ``dem`` is the bare terrain (no obstacle heights) used for the observer's
+    eye altitude; it falls back to the DSM when not supplied.
 
     ``progress_callback``, when given together with ``global_total`` and
     ``offset``, reports global progress for the whole area search.
     """
-    from app.engine.numpy_viewshed import numpy_viewshed
-    from app.engine.cone_filter import precompute_cone_geometry
+    from app.engine.cone_filter import (
+        build_cone_stencil,
+        build_sector_stencil,
+        precompute_cone_geometry,
+    )
 
     features: list[dict] = []
     to_wgs84 = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     n = len(points)
-    geometry = precompute_cone_geometry(dsm.shape, transform)
+    panoramic = mask_fov >= 360.0
+    elevation_source = dsm if dem is None else dem
+    horizon_profiles = (
+        _prepare_horizon_profiles(horizon)
+        if horizon is not None and horizon.get("profiles")
+        else None
+    )
+
+    radius = max(0, int(np.ceil(radius_px)))
+    sector_id = sector_totals = cone_stencil = None
+    cone_total = 0
+    geometry = None
+    if engine == "numpy":
+        if panoramic:
+            sector_id, sector_totals = build_sector_stencil(radius_px, panoramic_directions)
+        else:
+            cone_stencil, cone_total = build_cone_stencil(radius_px, azimuth, mask_fov)
+    else:
+        geometry = precompute_cone_geometry(dsm.shape, transform)
 
     for i, (x, y) in enumerate(points):
         if engine == "numpy":
-            visibility = numpy_viewshed(dsm, transform, crs, (x, y), observer_height)
+            score = _score_point_cropped(
+                dsm,
+                transform,
+                x,
+                y,
+                observer_height,
+                radius,
+                sector_id,
+                sector_totals,
+                cone_stencil,
+                cone_total,
+            )
         else:
             visibility = calculate_viewshed(
                 dsm, transform, crs, (x, y), observer_height, dsm_path=dsm_path
             )
+            if panoramic:
+                score = score_viewshed_panoramic(
+                    visibility,
+                    transform,
+                    dsm.shape,
+                    x,
+                    y,
+                    radius_px,
+                    directions=panoramic_directions,
+                    geometry=geometry,
+                )
+            else:
+                cone = create_directional_mask(
+                    dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
+                )
+                score = score_viewshed(visibility, cone)
 
-        if mask_fov >= 360.0:
-            # 360° / panoramic: score by averaging per-direction visibility across
-            # discrete evenly-spaced cones (fast: one viewshed, N cheap masks).
-            score = score_viewshed_panoramic(
-                visibility,
-                transform,
-                dsm.shape,
-                x,
-                y,
-                radius_px,
-                directions=panoramic_directions,
-                geometry=geometry,
-            )
-        else:
-            cone = create_directional_mask(
-                dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
-            )
-            score = score_viewshed(visibility, cone)
-
-        if horizon is not None and horizon.get("profiles"):
-            eye_altitude = _dem_elevation(dsm, transform, x, y) + observer_height
-            score *= _horizon_multiplier(horizon, x, y, eye_altitude)
+        if horizon_profiles is not None:
+            eye_altitude = _dem_elevation(elevation_source, transform, x, y) + observer_height
+            score *= _horizon_multiplier(horizon, horizon_profiles, x, y, eye_altitude)
 
         lng, lat = to_wgs84.transform(x, y)
         features.append(
@@ -474,6 +596,7 @@ def run_area_search(
             engine=engine,
             dsm_path=dsm_path,
             panoramic_directions=ctx["panoramic_directions"],
+            dem=ctx["dem"],
             progress_callback=progress_callback,
             offset=0,
             global_total=total,

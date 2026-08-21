@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +42,8 @@ class HorizonProfile:
 
     ``distance`` is in meters from the origin (in the DEM CRS), ``elevation``
     is the DEM value at each step (in meters). Both arrays are the same length.
+    ``suffix_max`` is the running maximum elevation from each sample outward,
+    derived on construction and used to short-circuit the blocking test.
     """
 
     azimuth: float
@@ -49,6 +51,11 @@ class HorizonProfile:
     origin_y: float
     distance: np.ndarray
     elevation: np.ndarray
+    suffix_max: np.ndarray = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # fmax ignores NaN nodata samples.
+        self.suffix_max = np.fmax.accumulate(self.elevation[::-1])[::-1]
 
 
 def _resolve_crs(crs) -> CRS:
@@ -209,12 +216,20 @@ def horizon_fraction(
     max_dist = max_distance_km * 1000.0
     d = profile.distance
     e = profile.elevation
-    beyond = (d > obs_distance) & (d <= max_dist) & np.isfinite(e)
-    if not np.any(beyond):
+
+    start = int(np.searchsorted(d, obs_distance, side="right"))
+    end = int(np.searchsorted(d, max_dist, side="right"))
+    if start >= end:
         return 1.0
-    dd = d[beyond] - obs_distance
-    curvature = (dd * dd) / (2.0 * EARTH_RADIUS_M)
-    effective = e[beyond] - curvature
+
+    # Curvature only ever lowers terrain, so nothing ahead can block an
+    # observer whose eye is already above the highest remaining sample.
+    if profile.suffix_max[start] <= eye_altitude:
+        return 1.0
+
+    dd = d[start:end] - obs_distance
+    effective = e[start:end] - (dd * dd) / (2.0 * EARTH_RADIUS_M)
+    # NaN nodata compares False, i.e. it is treated as non-blocking.
     if np.any(effective > eye_altitude):
         return 0.0
     return 1.0

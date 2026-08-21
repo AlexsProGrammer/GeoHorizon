@@ -95,13 +95,15 @@ def _patch_obstacles() -> None:
     area_search.fetch_obstacles = lambda *a, **k: (empty, empty)
 
 
-def _time_engine(cog_path: str, engine: str, area_km: float, grid_step: float) -> tuple[float, dict]:
+def _time_engine(
+    cog_path: str, engine: str, area_km: float, grid_step: float, radius_km: float
+) -> tuple[float, dict]:
     t0 = time.perf_counter()
     fc = run_area_search(
         db_session=None,
         cog_path=cog_path,
         search_area_geojson=_search_polygon_wgs84(area_km),
-        radius_km=0.1,
+        radius_km=radius_km,
         azimuth=270.0,
         fov=360.0,
         grid_step_m=grid_step,
@@ -115,6 +117,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grid-step", type=float, default=100.0, help="grid spacing in metres")
     parser.add_argument("--area-km", type=float, default=1.0, help="search area side in km")
+    parser.add_argument(
+        "--radius-km",
+        type=float,
+        default=0.1,
+        help="view radius in km; drives the per-observer window size",
+    )
+    parser.add_argument(
+        "--cog-size",
+        type=int,
+        default=200,
+        help=f"synthetic DEM side in pixels ({PIXEL_SIZE:g} m each)",
+    )
     parser.add_argument(
         "--engine",
         choices=("both", "numpy", "whitebox"),
@@ -135,18 +149,22 @@ def main(argv: list[str] | None = None) -> int:
     tmpdir = tempfile.mkdtemp(prefix="benchmark_")
     try:
         cog = Path(tmpdir) / "benchmark_cog.tif"
-        _make_cog(cog)
+        _make_cog(cog, size=args.cog_size)
 
         results: dict[str, float] = {}
         count = 0
 
         if args.engine in ("whitebox", "both"):
-            t_whitebox, fc = _time_engine(str(cog), "whitebox", args.area_km, args.grid_step)
+            t_whitebox, fc = _time_engine(
+                str(cog), "whitebox", args.area_km, args.grid_step, args.radius_km
+            )
             results["whitebox"] = round(t_whitebox, 3)
             count = int(fc.get("meta", {}).get("count", 0))
 
         if args.engine in ("numpy", "both"):
-            t_numpy, fc = _time_engine(str(cog), "numpy", args.area_km, args.grid_step)
+            t_numpy, fc = _time_engine(
+                str(cog), "numpy", args.area_km, args.grid_step, args.radius_km
+            )
             results["numpy"] = round(t_numpy, 3)
             count = int(fc.get("meta", {}).get("count", 0))
 
@@ -158,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = {
             "area_km": args.area_km,
             "grid_step_m": args.grid_step,
+            "radius_km": args.radius_km,
             "points": count,
             "elapsed_s": results,
         }
@@ -167,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"Search area : {args.area_km:.2f} km x {args.area_km:.2f} km")
             print(f"Grid step   : {args.grid_step:g} m  ({count} points)")
+            print(f"View radius : {args.radius_km:g} km")
             if "whitebox" in results:
                 print(f"Whitebox    : {results['whitebox']:.3f} s")
             if "numpy" in results:

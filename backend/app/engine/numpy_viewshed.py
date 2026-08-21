@@ -24,14 +24,32 @@ The result is a ``uint8`` array: ``1`` = visible, ``0`` = blocked / outside.
 
 from __future__ import annotations
 
+import math
+import os
 from typing import Sequence
 
 import numpy as np
+
+try:
+    from numba import njit
+
+    _NUMBA_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only where numba is absent
+    _NUMBA_AVAILABLE = False
+
+    def njit(*args, **kwargs):
+        def wrap(fn):
+            return fn
+
+        return wrap(args[0]) if args and callable(args[0]) else wrap
+
 
 __all__ = [
     "numpy_viewshed",
     "numpy_viewshed_multi",
     "reference_viewshed",
+    "reference_viewshed_numpy",
+    "resolve_kernel",
 ]
 
 OBSERVER_HEIGHT_DEFAULT = 1.8
@@ -54,9 +72,20 @@ def _slope_matrix(dem: np.ndarray, ro: int, co: int, eye: float) -> np.ndarray:
     cols = np.arange(w, dtype=WORK_DTYPE)
     dr = rows[:, None] - ro
     dc = cols[None, :] - co
-    dist = np.hypot(dc, dr)
+    # sqrt(dx^2+dy^2) rather than hypot so the numba kernel matches bit-for-bit.
+    dist = np.sqrt(dc * dc + dr * dr)
     dist = np.maximum(dist, WORK_DTYPE(1e-9))
     return (dem - WORK_DTYPE(eye)) / dist
+
+
+def resolve_kernel(kernel: str | None = None) -> str:
+    """Resolve the sweep kernel from an override or the ``VIEWSHED_KERNEL`` env
+    var. ``auto``/``numba`` use the JIT kernel when numba is importable;
+    ``numpy`` forces the pure-NumPy reference implementation."""
+    choice = (kernel or os.getenv("VIEWSHED_KERNEL", "auto")).strip().lower()
+    if choice == "numpy":
+        return "numpy"
+    return "numba" if _NUMBA_AVAILABLE else "numpy"
 
 
 def reference_viewshed(
@@ -64,13 +93,148 @@ def reference_viewshed(
     observer_coords: tuple[float, float],
     observer_height_m: float = OBSERVER_HEIGHT_DEFAULT,
 ) -> np.ndarray:
-    """Reference viewshed for one observer on an in-memory DEM.
+    """Viewshed for one observer on an in-memory DEM.
 
     ``dem`` is a 2D elevation array (MSL + obstacles); ``observer_coords`` are
     the fractional ``(row, col)`` pixel coordinates of the observer. Returns a
     ``uint8`` mask (1 = visible). Safe when the observer is outside the grid
     (returns all zeros).
+
+    Dispatches to the Numba kernel when available; both kernels implement the
+    same algorithm and must agree exactly.
     """
+    if resolve_kernel() == "numba":
+        return _reference_viewshed_numba(dem, observer_coords, observer_height_m)
+    return reference_viewshed_numpy(dem, observer_coords, observer_height_m)
+
+
+def _prepare(
+    dem: np.ndarray, observer_coords: tuple[float, float], observer_height_m: float
+):
+    """Shared entry validation: returns ``(dem, vis, ro, co, eye)`` or ``None``."""
+    dem = np.ascontiguousarray(dem, dtype=WORK_DTYPE)
+    h, w = dem.shape
+    vis = np.zeros((h, w), dtype=np.uint8)
+    if h == 0 or w == 0:
+        return None, vis
+    r0 = float(observer_coords[0])
+    c0 = float(observer_coords[1])
+    if not (0.0 <= r0 < h and 0.0 <= c0 < w):
+        return None, vis
+    ro = int(round(r0))
+    co = int(round(c0))
+    return (dem, ro, co, float(dem[ro, co]) + observer_height_m), vis
+
+
+@njit(cache=True)
+def _cell_slope(dem, r: int, c: int, ro: int, co: int, eye):
+    dr = np.float32(r - ro)
+    dc = np.float32(c - co)
+    d = np.float32(math.sqrt(dc * dc + dr * dr))
+    if d < np.float32(1e-9):
+        d = np.float32(1e-9)
+    return np.float32((dem[r, c] - eye) / d)
+
+
+@njit(cache=True)
+def _sweep(dem, vis, slope, ro: int, co: int, eye_in: float) -> None:
+    """Fused axis + quadrant horizon sweep; writes into ``vis`` and ``slope``."""
+    h, w = dem.shape
+    neg_inf = np.float32(-np.inf)
+    eye = np.float32(eye_in)
+
+    vis[ro, co] = 1
+    slope[ro, co] = 0.0
+
+    # --- half axes, outward from the observer ---
+    run = neg_inf
+    for r in range(ro - 1, -1, -1):
+        s = _cell_slope(dem, r, co, ro, co, eye)
+        ref = run
+        if s > run:
+            run = s
+        slope[r, co] = run
+        vis[r, co] = 1 if s > ref else 0
+
+    run = neg_inf
+    for r in range(ro + 1, h):
+        s = _cell_slope(dem, r, co, ro, co, eye)
+        ref = run
+        if s > run:
+            run = s
+        slope[r, co] = run
+        vis[r, co] = 1 if s > ref else 0
+
+    run = neg_inf
+    for c in range(co - 1, -1, -1):
+        s = _cell_slope(dem, ro, c, ro, co, eye)
+        ref = run
+        if s > run:
+            run = s
+        slope[ro, c] = run
+        vis[ro, c] = 1 if s > ref else 0
+
+    run = neg_inf
+    for c in range(co + 1, w):
+        s = _cell_slope(dem, ro, c, ro, co, eye)
+        ref = run
+        if s > run:
+            run = s
+        slope[ro, c] = run
+        vis[ro, c] = 1 if s > ref else 0
+
+    # --- quadrants: each row is seeded from the axis and carries the running
+    # horizon outward, combined with the already-processed nearer row ---
+    for quadrant in range(4):
+        rsgn = 1 if quadrant < 2 else -1
+        east = quadrant % 2 == 0
+        r_start = ro + rsgn
+        while 0 <= r_start < h:
+            r = r_start
+            run = slope[r, co]
+            if east:
+                for c in range(co + 1, w):
+                    up = slope[r - rsgn, c]
+                    s = _cell_slope(dem, r, c, ro, co, eye)
+                    v = s if s > up else up
+                    ref = run
+                    if v > run:
+                        run = v
+                    vis[r, c] = 1 if s > ref else 0
+                    slope[r, c] = run
+            else:
+                for c in range(co - 1, -1, -1):
+                    up = slope[r - rsgn, c]
+                    s = _cell_slope(dem, r, c, ro, co, eye)
+                    v = s if s > up else up
+                    ref = run
+                    if v > run:
+                        run = v
+                    vis[r, c] = 1 if s > ref else 0
+                    slope[r, c] = run
+            r_start += rsgn
+
+
+def _reference_viewshed_numba(
+    dem: np.ndarray,
+    observer_coords: tuple[float, float],
+    observer_height_m: float = OBSERVER_HEIGHT_DEFAULT,
+) -> np.ndarray:
+    prepared, vis = _prepare(dem, observer_coords, observer_height_m)
+    if prepared is None:
+        return vis
+    dem_c, ro, co, eye = prepared
+    slope = np.full(dem_c.shape, -np.inf, dtype=WORK_DTYPE)
+    _sweep(dem_c, vis, slope, ro, co, eye)
+    return vis
+
+
+def reference_viewshed_numpy(
+    dem: np.ndarray,
+    observer_coords: tuple[float, float],
+    observer_height_m: float = OBSERVER_HEIGHT_DEFAULT,
+) -> np.ndarray:
+    """Pure-NumPy reference sweep, kept as the correctness oracle for the JIT."""
     dem = np.asarray(dem, dtype=WORK_DTYPE)
     h, w = dem.shape
     vis = np.zeros((h, w), dtype=np.uint8)

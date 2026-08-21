@@ -12,6 +12,7 @@ geopandas
 shapely>=2.0
 pyproj
 scipy
+numba
 whitebox
 alembic
 aiofiles

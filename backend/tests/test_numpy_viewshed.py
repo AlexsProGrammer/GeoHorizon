@@ -7,7 +7,13 @@ import pytest
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
-from app.engine.numpy_viewshed import numpy_viewshed, numpy_viewshed_multi, reference_viewshed
+from app.engine.numpy_viewshed import (
+    numpy_viewshed,
+    numpy_viewshed_multi,
+    reference_viewshed,
+    reference_viewshed_numpy,
+    resolve_kernel,
+)
 
 CRS_25832 = CRS.from_epsg(25832)
 TRANSFORM = from_origin(0, 50, 1, 1)  # 1m pixels, world y from 50 down to 0
@@ -73,6 +79,26 @@ def test_reference_viewshed_flat_direct():
     dem = np.zeros(SHAPE, dtype=np.float64)
     vis = reference_viewshed(dem, (25.0, 10.0), 1.8)
     assert int((vis == 1).sum()) == SHAPE[0] * SHAPE[1]
+
+
+def test_numba_kernel_matches_numpy_kernel():
+    """The JIT kernel and the NumPy oracle must produce identical masks.
+
+    Both work in float32 with the same sqrt formula, so agreement is exact.
+    """
+    if resolve_kernel() != "numba":
+        pytest.skip("numba not available")
+
+    from app.engine.numpy_viewshed import _reference_viewshed_numba
+
+    rng = np.random.default_rng(11)
+    for shape in ((37, 53), (50, 50)):
+        dem = rng.random(shape).astype(np.float32) * 80.0
+        dem += np.arange(shape[0], dtype=np.float32)[:, None] * 2.0
+        for obs in ((0, 0), (shape[0] - 1, shape[1] - 1), (17, 23), (0, 25)):
+            a = _reference_viewshed_numba(dem, obs, 1.8)
+            b = reference_viewshed_numpy(dem, obs, 1.8)
+            assert np.array_equal(a, b), f"kernels differ at {shape} obs={obs}"
 
 
 @pytest.mark.external

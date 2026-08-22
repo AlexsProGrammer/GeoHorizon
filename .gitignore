@@ -1,13 +1,55 @@
 # Dependencies
 node_modules/
+frontend/node_modules/
 __pycache__/
+*.py[cod]
 *.pyc
+frontend/.vite/
+frontend/dist/
+frontend/.cache/
+frontend/.pnpm-store/
 
-# Environment
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+
+# Environment files
 .env
+.env.*
+frontend/.env
+frontend/.env.*
+backend/.env
+backend/.env.*
+
+# Python / backend caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+coverage/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/coverage/
 
 # Data directories (generated / Docker-owned) - excluded entirely from indexing
 data/
+processed/
+postgres_data/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Local build artifacts
+*.tsbuildinfo
+frontend/*.tsbuildinfo
 
 # Kilo Code
 .kilo/*

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import redis
 from celery import chord, group
-from pyproj import CRS
+from pyproj import CRS, Transformer
 from rasterio.transform import Affine
 
 from app.core.db import SessionLocal
@@ -19,8 +19,10 @@ from app.engine.area_search import (
     process_points_batch,
     resolve_engine,
 )
+from app.engine.dsm_builder import build_dsm, crop_dem_window, fetch_obstacles, get_bounding_box
 from app.engine.overlay import visibility_overlay_png
 from app.engine.pipeline import run_viewshed_pipeline
+from app.engine.sightlines import cast_sightlines
 from app.engine.viewshed import OBSERVER_HEIGHT_DEFAULT
 from app.worker import celery_app
 
@@ -427,73 +429,134 @@ def _persist_area_result(task_id: str, fc: dict) -> None:
     out_path.write_text(json.dumps(fc))
 
 
-@celery_app.task(bind=True, name="viewshed.run_pipeline")
-def run_viewshed_task(self, params: dict):
-    """Single-observer viewshed: an exact visibility raster from one point.
+def _transform_projected_to_wgs84(crs, x: float, y: float) -> tuple[float, float]:
+    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    return transformer.transform(x, y)
 
-    Complements area search (which ranks many candidate points): this renders
-    what is actually visible from the clicked position as a map overlay, plus
-    the long-range horizon verdict. Persists ``viewshed_{task_id}.png`` and
-    ``viewshed_{task_id}.json``; the latter is what ``GET /viewshed/result``
-    returns for this mode.
+
+@celery_app.task(bind=True, name="viewshed.run_point_sightlines")
+def run_point_sightlines_task(self, params: dict):
+    """Compute per-ray sightline samples for a single observer position.
+
+    This is the point-mode implementation of the phase-1 LOS engine: instead of
+    wrapping the observer in a circle and re-using the area search path, each
+    sample is cast directly from the chosen observer position along its ray.
     """
     task_id = self.request.id
 
     def progress(status: str, pct: int, step: str) -> None:
         _publish_progress(task_id, status, pct, step)
 
-    progress("STARTED", 5, "Starting viewshed")
+    progress("STARTED", 5, "Preparing sightline analysis")
     session = SessionLocal()
     try:
-        result = run_viewshed_pipeline(
-            session,
-            cog_path=params["cog_path"],
-            lat=params["lat"],
-            lng=params["lng"],
-            radius_km=params["radius_km"],
-            azimuth=params["azimuth"],
-            fov=params["fov"],
+        with __import__("rasterio").open(params["cog_path"]) as src:
+            src_crs = src.crs
+            if src_crs is None:
+                src_crs = CRS.from_epsg(25832)
+            pixel_size = abs(src.transform.a)
+        bbox = get_bounding_box(params["lat"], params["lng"], params["radius_km"], src_crs)
+        dem_array, transform, crs = crop_dem_window(params["cog_path"], bbox)
+        crs = CRS.from_user_input(crs) if crs is not None else CRS.from_epsg(25832)
+
+        transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        obs_x, obs_y = transformer.transform(params["lng"], params["lat"])
+        bbox_polygon = __import__("shapely.geometry").geometry.box(*bbox)
+        bbox_polygon = __import__("shapely.ops").ops.transform(
+            Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform, bbox_polygon
+        )
+        buildings_gdf, forests_gdf = fetch_obstacles(session, bbox_polygon)
+
+        progress("BUILDING_DSM", 35, "Overlaying terrain and obstacles")
+        dsm = build_dsm(
+            dem_array,
+            transform,
+            buildings_gdf,
+            forests_gdf,
+            crs=crs,
+            tree_height_override=params.get("tree_height", 30.0),
+            building_height_override=params.get("building_height", 15.0),
+        )
+
+        progress("CASTING_RAYS", 65, "Casting sightlines from observer")
+        result = cast_sightlines(
+            dsm,
+            transform=transform,
+            observer=(obs_x, obs_y),
             observer_height=params.get("observer_height", OBSERVER_HEIGHT_DEFAULT),
-            tree_height=params.get("tree_height", 30.0),
-            building_height=params.get("building_height", 15.0),
-            horizon_enabled=params.get("horizon_enabled", False),
-            horizon_max_km=params.get("horizon_max_km", 100.0),
-            horizon_cache_dir=str(PROCESSED_DIR / "horizon_cache"),
-            progress_callback=progress,
+            radius_m=float(params["radius_km"]) * 1000.0,
+            azimuth=float(params.get("azimuth", 0.0)),
+            fov=float(params.get("fov", 360.0)),
+            ray_step_deg=float(params.get("ray_step_deg", 0.5)),
+            sample_step_m=float(params.get("sample_step_m") or max(pixel_size, 10.0)),
+            grazing_margin_m=float(params.get("grazing_margin_m", 2.0)),
         )
 
-        progress("RENDERING", 92, "Rendering overlay")
-        png, overlay_bounds = visibility_overlay_png(
-            result["visibility"], result["transform"], result["crs"]
-        )
+        observer_ground = float(dem_array[round((obs_y - transform.f) / transform.e), round((obs_x - transform.c) / transform.a)])
+        observer_ground = float(__import__("numpy").nan_to_num(observer_ground))
 
-        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-        (PROCESSED_DIR / f"viewshed_{task_id}.png").write_bytes(png)
+        sample_features = []
+        for az, distance, state, clearance in zip(
+            result.samples["azimuth"],
+            result.samples["distance"],
+            result.samples["state"],
+            result.samples["clearance"],
+        ):
+            world_x = obs_x + math.sin(math.radians(az % 360.0)) * distance
+            world_y = obs_y + math.cos(math.radians(az % 360.0)) * distance
+            lng, lat = _transform_projected_to_wgs84(crs, world_x, world_y)
+            sample_features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [lng, lat]},
+                    "properties": {
+                        "state": state,
+                        "distance_m": round(float(distance), 2),
+                        "azimuth": round(float(az), 2),
+                        "clearance_m": round(float(clearance), 2),
+                    },
+                }
+            )
 
         meta = {
-            "type": "Viewshed",
+            "type": "PointSightlines",
             "task_id": task_id,
-            "overlay_url": f"/api/viewshed/overlay/{task_id}.png",
-            "overlay_bounds": overlay_bounds,
             "observer": [params["lng"], params["lat"]],
-            "radius_km": params["radius_km"],
-            "azimuth": params["azimuth"],
-            "fov": params["fov"],
-            "visible_ratio": round(
-                float(np.count_nonzero(result["visibility"])) / result["visibility"].size, 4
-            )
-            if result["visibility"].size
-            else 0.0,
+            "ground_elevation_m": round(observer_ground, 2),
+            "eye_altitude_m": round(observer_ground + float(params.get("observer_height", OBSERVER_HEIGHT_DEFAULT)), 2),
+            "radius_km": float(params["radius_km"]),
+            "azimuth": float(params.get("azimuth", 0.0)),
+            "fov": float(params.get("fov", 360.0)),
+            "samples": {
+                "type": "FeatureCollection",
+                "features": sample_features,
+            },
+            "horizon_arcs": [
+                {
+                    "azimuth_start": arc.azimuth_start,
+                    "azimuth_end": arc.azimuth_end,
+                    "fraction": arc.fraction,
+                    "state": arc.state,
+                }
+                for arc in result.horizon_arcs
+            ],
+            "stats": result.stats,
         }
-        if "horizon_score" in result:
-            meta["horizon_score"] = result["horizon_score"]
-            meta["horizon_pass"] = result["horizon_pass"]
 
-        (PROCESSED_DIR / f"viewshed_{task_id}.json").write_text(json.dumps(meta))
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        out_path = PROCESSED_DIR / f"point_{task_id}.json"
+        out_path.write_text(json.dumps(meta))
+
         progress("SUCCESS", 100, "Complete")
         return meta
     except Exception as exc:
-        progress("FAILURE", 0, f"Viewshed failed: {exc}")
+        progress("FAILURE", 0, f"Sightline task failed: {exc}")
         raise
     finally:
         session.close()
+
+
+@celery_app.task(bind=True, name="viewshed.run_pipeline")
+def run_viewshed_task(self, params: dict):
+    """Backward-compatible alias for the point-sightline worker."""
+    return run_point_sightlines_task(self, params)

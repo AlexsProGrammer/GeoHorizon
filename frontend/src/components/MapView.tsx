@@ -18,6 +18,8 @@ const DEFAULT_CENTER: [number, number] = [12.65, 47.95]
 // Empty GeoJSON used to clear native MapLibre overlay sources.
 const EMPTY_FC: FeatureCollection = { type: 'FeatureCollection', features: [] }
 
+type TaskResult = FeatureCollection | { samples?: FeatureCollection; [key: string]: unknown }
+
 // Threshold coloring for area-search results (matches the legend: green/yellow/red).
 function resultColor(score: number): string {
   if (score >= 0.7) return '#22c55e'
@@ -28,6 +30,16 @@ function resultVisible(score: number, vis: { green: boolean; yellow: boolean; re
   if (score >= 0.7) return vis.green
   if (score >= 0.3) return vis.yellow
   return vis.red
+}
+function pointStateColor(state: string): string {
+  if (state === 'clear') return '#22c55e'
+  if (state === 'grazing') return '#eab308'
+  return '#ef4444'
+}
+function extractResultFeatures(resultGeoJSON: TaskResult | null): FeatureCollection {
+  if (!resultGeoJSON) return EMPTY_FC
+  if ('samples' in resultGeoJSON && resultGeoJSON.samples) return resultGeoJSON.samples
+  return resultGeoJSON as FeatureCollection
 }
 
 // Friendly labels for the layers in public/style.json (OpenMapTiles-like).
@@ -172,13 +184,22 @@ export default function MapView() {
     if (!map) return
     const src = map.getSource('gh-result') as maplibregl.GeoJSONSource | undefined
     if (!src) return
-    const feats = (resultGeoJSON?.features ?? []).filter((f) => {
-      const s = (f.properties?.score as number | undefined) ?? 0
-      return f.geometry.type === 'Point' && resultVisible(s, legendVisibility)
-    }).map((f) => {
-      const s = (f.properties?.score as number | undefined) ?? 0
-      const props = { ...f.properties, color: resultColor(s) }
-      return { type: 'Feature', properties: props, geometry: f.geometry }
+    const sampleCollection = extractResultFeatures(resultGeoJSON)
+    const feats = sampleCollection.features.filter((f: Feature<Geometry>) => {
+      if (f.geometry.type !== 'Point') return false
+      const state = String(f.properties?.state ?? '')
+      if (state) {
+        return state === 'clear' ? legendVisibility.green : state === 'grazing' ? legendVisibility.yellow : legendVisibility.red
+      }
+      const score = (f.properties?.score as number | undefined) ?? 0
+      return resultVisible(score, legendVisibility)
+    }).map((f: Feature<Geometry>) => {
+      const state = String(f.properties?.state ?? '')
+      const props = {
+        ...f.properties,
+        color: state ? pointStateColor(state) : resultColor((f.properties?.score as number | undefined) ?? 0),
+      }
+      return { type: 'Feature', properties: props, geometry: f.geometry } as Feature<Geometry>
     })
     src.setData({ type: 'FeatureCollection', features: feats } as unknown as any)
     map.setLayoutProperty('gh-result', 'visibility', feats.length ? 'visible' : 'none')

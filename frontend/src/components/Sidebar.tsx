@@ -1,8 +1,7 @@
 import { useEffect } from 'react'
 import { Ban, Crosshair, Map as MapIcon, MapPin, Mountain, Play } from 'lucide-react'
 import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
-import { cancelViewshed, startAreaSearch } from '../services/api'
-import { buildCirclePolygon } from '../services/geometry'
+import { cancelViewshed, startAreaSearch, startPointSightline } from '../services/api'
 import Legend from './Legend'
 
 const ACTIVE_STATUSES: ViewshedStatus[] = [
@@ -91,16 +90,13 @@ export default function Sidebar() {
         })
         task_id = res.task_id
       } else if (observerLat != null && observerLng != null) {
-        // Point mode: wrap the observer in a circular search area and run the
-        // same multi-point polygon engine as area mode (unified result format).
-        const circle = buildCirclePolygon(observerLng, observerLat, radiusKm)
-        const res = await startAreaSearch({
+        const res = await startPointSightline({
           cog_path: selectedCog,
-          search_area: circle.geometry,
+          lat: observerLat,
+          lng: observerLng,
           radius_km: radiusKm,
           azimuth,
           fov: effectiveFov,
-          grid_step_m: gridStepM,
           observer_height: observerHeight,
           tree_height: treeOffset,
           building_height: buildingOffset,

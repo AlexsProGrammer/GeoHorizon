@@ -13,7 +13,7 @@ from rasterio.warp import transform, transform_bounds
 
 from app.engine.terrain_tiles import render_terrain_tile
 from app.worker import celery_app
-from app.worker.viewshed_tasks import run_area_search_task, run_viewshed_task
+from app.worker.viewshed_tasks import run_area_search_task, run_point_sightlines_task, run_viewshed_task
 
 router = APIRouter(prefix="/viewshed", tags=["viewshed"])
 
@@ -40,6 +40,23 @@ class ViewshedRequest(BaseModel):
     horizon_max_km: float = 100.0
 
 
+class PointSightlineRequest(BaseModel):
+    cog_path: str
+    lat: float
+    lng: float
+    radius_km: float
+    azimuth: float
+    fov: float
+    observer_height: float = 1.8
+    tree_height: float = 30.0
+    building_height: float = 15.0
+    sample_step_m: float | None = None
+    ray_step_deg: float = 0.5
+    grazing_margin_m: float = 2.0
+    horizon_enabled: bool = False
+    horizon_max_km: float = 100.0
+
+
 class AreaSearchRequest(BaseModel):
     cog_path: str
     search_area: dict  # GeoJSON Polygon (WGS84)
@@ -54,9 +71,15 @@ class AreaSearchRequest(BaseModel):
     horizon_max_km: float = 100.0
 
 
+@router.post("/point")
+async def point_sightline(payload: PointSightlineRequest):
+    task = run_point_sightlines_task.delay(payload.model_dump())
+    return {"task_id": task.id}
+
+
 @router.post("/start")
 async def start(payload: ViewshedRequest):
-    task = run_viewshed_task.delay(payload.model_dump())
+    task = run_point_sightlines_task.delay(payload.model_dump())
     return {"task_id": task.id}
 
 
@@ -80,6 +103,9 @@ async def get_result(task_id: str):
     result_path = PROCESSED_DIR / f"area_{task_id}.json"
     if result_path.exists():
         return json.loads(result_path.read_text())
+    point_path = PROCESSED_DIR / f"point_{task_id}.json"
+    if point_path.exists():
+        return json.loads(point_path.read_text())
     viewshed_path = PROCESSED_DIR / f"viewshed_{task_id}.json"
     if viewshed_path.exists():
         return json.loads(viewshed_path.read_text())
@@ -123,9 +149,11 @@ async def status(task_id: str):
     # written by the merge callback afterwards. Report SUCCESS to the frontend
     # only once the result file actually exists, so polling doesn't race ahead
     # of the merge and try to read a not-yet-written result.
-    persisted = (PROCESSED_DIR / f"area_{task_id}.json").exists() or (
-        PROCESSED_DIR / f"viewshed_{task_id}.json"
-    ).exists()
+    persisted = (
+        (PROCESSED_DIR / f"area_{task_id}.json").exists()
+        or (PROCESSED_DIR / f"point_{task_id}.json").exists()
+        or (PROCESSED_DIR / f"viewshed_{task_id}.json").exists()
+    )
     if result.state == "SUCCESS" and not persisted:
         return {
             "task_id": task_id,
@@ -171,6 +199,7 @@ async def cancel(task_id: str):
     for name in (
         f"area_{task_id}_dsm.npy",
         f"area_{task_id}_dem.npy",
+        f"point_{task_id}.json",
         f"viewshed_{task_id}.json",
         f"viewshed_{task_id}.png",
     ):

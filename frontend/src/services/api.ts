@@ -25,6 +25,23 @@ export interface ViewshedRequest {
   horizon_max_km?: number
 }
 
+export interface PointSightlineRequest {
+  cog_path: string
+  lat: number
+  lng: number
+  radius_km: number
+  azimuth: number
+  fov: number
+  observer_height: number
+  tree_height: number
+  building_height: number
+  sample_step_m?: number
+  ray_step_deg?: number
+  grazing_margin_m?: number
+  horizon_enabled: boolean
+  horizon_max_km?: number
+}
+
 export interface AreaSearchRequest {
   cog_path: string
   search_area: object // GeoJSON Polygon (WGS84)
@@ -58,6 +75,16 @@ export async function startViewshed(params: ViewshedRequest): Promise<{ task_id:
   return (await res.json()) as { task_id: string }
 }
 
+export async function startPointSightline(params: PointSightlineRequest): Promise<{ task_id: string }> {
+  const res = await fetch(`${API_BASE}/viewshed/point`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) throw new Error(`Failed to start point sightline: ${res.status}`)
+  return (await res.json()) as { task_id: string }
+}
+
 export async function startAreaSearch(params: AreaSearchRequest): Promise<{ task_id: string }> {
   const res = await fetch(`${API_BASE}/viewshed/area-search`, {
     method: 'POST',
@@ -68,10 +95,10 @@ export async function startAreaSearch(params: AreaSearchRequest): Promise<{ task
   return (await res.json()) as { task_id: string }
 }
 
-export async function fetchTaskResult(taskId: string): Promise<FeatureCollection> {
+export async function fetchTaskResult(taskId: string): Promise<FeatureCollection | { samples?: FeatureCollection; [key: string]: unknown }> {
   const res = await fetch(`${API_BASE}/viewshed/result/${taskId}`)
   if (!res.ok) throw new Error(`Failed to fetch result: ${res.status}`)
-  return (await res.json()) as FeatureCollection
+  return (await res.json()) as FeatureCollection | { samples?: FeatureCollection; [key: string]: unknown }
 }
 
 export async function cancelViewshed(taskId: string): Promise<void> {

@@ -22,6 +22,8 @@ export type SearchMode = 'point' | 'area'
 
 export type LegendColor = 'green' | 'yellow' | 'red'
 
+export type TaskResult = FeatureCollection | { samples?: FeatureCollection; [key: string]: unknown }
+
 export interface LegendVisibility {
   green: boolean
   yellow: boolean
@@ -60,7 +62,7 @@ interface MapState {
   draftVertices: [number, number][]
   gridStepM: number
   estimatedPointCount: number
-  resultGeoJSON: FeatureCollection | null
+  resultGeoJSON: TaskResult | null
   legendVisibility: LegendVisibility
 
   // Available COGs (from /api/viewshed/bounds)
@@ -93,7 +95,7 @@ interface MapState {
   clearDraft: () => void
   setGridStep: (m: number) => void
   computeEstimatedCount: () => void
-  setResultGeoJSON: (geojson: FeatureCollection | null) => void
+  setResultGeoJSON: (geojson: TaskResult | null) => void
   toggleLegendColor: (color: LegendColor) => void
   setCog: (path: string) => void
   setTaskId: (id: string | null) => void

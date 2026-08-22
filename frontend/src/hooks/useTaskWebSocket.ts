@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { FeatureCollection } from 'geojson'
-import { useMapStore, type ViewshedStatus } from '../store/useMapStore'
+import { useMapStore, type TaskResult, type ViewshedStatus } from '../store/useMapStore'
 import { fetchTaskResult, getTaskStatus } from '../services/api'
 
 // The WebSocket endpoint is served directly by the API (not through the Vite
@@ -124,7 +123,7 @@ export function useTaskWebSocket() {
 
 async function fetchResult(
   taskId: string,
-  setResultGeoJSON: (geojson: FeatureCollection | null) => void,
+  setResultGeoJSON: (geojson: TaskResult | null) => void,
 ) {
   try {
     const fc = await fetchTaskResult(taskId)

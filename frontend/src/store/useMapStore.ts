@@ -84,7 +84,7 @@ interface MapState {
   hoverPosition: HoverInfo | null
 
   // Actions
-  setObserver: (lat: number, lng: number) => void
+  setObserver: (lat: number | null, lng: number | null) => void
   setRadius: (km: number) => void
   setAzimuth: (deg: number) => void
   setFov: (deg: number) => void
@@ -108,6 +108,7 @@ interface MapState {
   setHoverPosition: (hover: HoverInfo | null) => void
   resetTask: () => void
   resetResult: () => void
+  resetAnalysis: () => void
   fetchAvailableCogs: () => Promise<void>
 }
 
@@ -190,6 +191,20 @@ export const useMapStore = create<MapState>((set) => ({
     set({ taskId: null, progress: 0, status: 'IDLE', step: '', errorMessage: null }),
   setHoverPosition: (hoverPosition) => set({ hoverPosition }),
   resetResult: () => set({ resultGeoJSON: null }),
+  resetAnalysis: () =>
+    set({
+      observerLat: null,
+      observerLng: null,
+      searchPolygon: null,
+      draftVertices: [],
+      resultGeoJSON: null,
+      estimatedPointCount: 0,
+      taskId: null,
+      progress: 0,
+      status: 'IDLE',
+      step: '',
+      errorMessage: null,
+    }),
   fetchAvailableCogs: async () => {
     try {
       const cogs = await fetchCogBounds()

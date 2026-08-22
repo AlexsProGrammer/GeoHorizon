@@ -53,6 +53,7 @@ export default function Sidebar() {
   const setError = useMapStore((s) => s.setError)
   const resetTask = useMapStore((s) => s.resetTask)
   const resetResult = useMapStore((s) => s.resetResult)
+  const resetAnalysis = useMapStore((s) => s.resetAnalysis)
   const fetchAvailableCogs = useMapStore((s) => s.fetchAvailableCogs)
 
   useEffect(() => {
@@ -122,6 +123,10 @@ export default function Sidebar() {
       resetTask()
       resetResult()
     }
+  }
+
+  function handleReset() {
+    resetAnalysis()
   }
 
   return (
@@ -229,7 +234,15 @@ export default function Sidebar() {
         </select>
       </section>
 
-      <Slider label="Radius" value={radiusKm} display={`${radiusKm} km`} min={1} max={50} step={1} onChange={setRadius} />
+      <Slider
+        label={searchMode === 'point' ? 'Observation Radius' : 'Preview Radius'}
+        value={radiusKm}
+        display={`${radiusKm} km`}
+        min={1}
+        max={50}
+        step={1}
+        onChange={setRadius}
+      />
       {!panoramicMode && (
         <>
           <Slider label="Azimuth" value={azimuth} display={`${azimuth}°`} min={0} max={359} step={1} onChange={setAzimuth} />
@@ -299,22 +312,30 @@ export default function Sidebar() {
 
       {resultGeoJSON && <Legend />}
 
-      {isProcessing ? (
+      <div className="flex gap-2">
         <button
-          onClick={handleCancel}
-          className="flex items-center justify-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+          onClick={handleReset}
+          className="flex flex-1 items-center justify-center gap-2 rounded-md border border-zinc-300 bg-zinc-100 px-4 py-2 text-sm font-semibold text-zinc-700 transition-colors hover:bg-zinc-200"
         >
-          <Ban size={16} /> Cancel
+          Reset
         </button>
-      ) : (
-        <button
-          onClick={handleCalculate}
-          disabled={!canCalculate}
-          className="flex items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Play size={16} /> {searchMode === 'area' ? 'Search Area' : 'Calculate'}
-        </button>
-      )}
+        {isProcessing ? (
+          <button
+            onClick={handleCancel}
+            className="flex flex-1 items-center justify-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700"
+          >
+            <Ban size={16} /> Cancel
+          </button>
+        ) : (
+          <button
+            onClick={handleCalculate}
+            disabled={!canCalculate}
+            className="flex flex-1 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Play size={16} /> {searchMode === 'area' ? 'Search Area' : 'Calculate'}
+          </button>
+        )}
+      </div>
     </aside>
   )
 }

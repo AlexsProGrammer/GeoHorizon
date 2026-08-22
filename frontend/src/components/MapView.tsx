@@ -145,11 +145,37 @@ export default function MapView() {
     if (!map) return
     const src = map.getSource('gh-cone') as maplibregl.GeoJSONSource | undefined
     if (!src) return
-    const show = searchMode === 'point' && observerLat != null && observerLng != null
+
+    const centroid =
+      searchMode === 'area' && searchPolygon
+        ? (() => {
+            const ring = searchPolygon.geometry.coordinates[0]
+            if (!ring || ring.length < 3) return null
+            let sumLng = 0
+            let sumLat = 0
+            for (const [lng, lat] of ring) {
+              sumLng += lng
+              sumLat += lat
+            }
+            return [sumLng / ring.length, sumLat / ring.length] as const
+          })()
+        : observerLat != null && observerLng != null
+          ? ([observerLng, observerLat] as const)
+          : null
+
+    const show = centroid != null
     const coneFov = panoramicMode ? 360 : fov
-    src.setData(show ? (buildConePolygon(observerLng!, observerLat!, radiusKm, azimuth, coneFov) as unknown as any) : (EMPTY_FC as unknown as any))
-    map.setLayoutProperty('gh-cone-fill', 'visibility', show ? 'visible' : 'none')
-    map.setLayoutProperty('gh-cone-line', 'visibility', show ? 'visible' : 'none')
+    if (!show || !centroid) {
+      src.setData(EMPTY_FC as unknown as any)
+      map.setLayoutProperty('gh-cone-fill', 'visibility', 'none')
+      map.setLayoutProperty('gh-cone-line', 'visibility', 'none')
+      return
+    }
+
+    const [centerLng, centerLat] = centroid
+    src.setData(buildConePolygon(centerLng, centerLat, radiusKm, azimuth, coneFov) as unknown as any)
+    map.setLayoutProperty('gh-cone-fill', 'visibility', 'visible')
+    map.setLayoutProperty('gh-cone-line', 'visibility', 'visible')
   }
   function updateSearch() {
     const map = mapRef.current

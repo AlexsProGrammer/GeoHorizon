@@ -11,20 +11,6 @@ export interface CogInfo {
   nodata: number | null
 }
 
-export interface ViewshedRequest {
-  cog_path: string
-  lat: number
-  lng: number
-  radius_km: number
-  azimuth: number
-  fov: number
-  observer_height: number
-  tree_height: number
-  building_height: number
-  horizon_enabled: boolean
-  horizon_max_km?: number
-}
-
 export interface PointSightlineRequest {
   cog_path: string
   lat: number
@@ -63,16 +49,6 @@ export async function fetchCogBounds(): Promise<CogInfo[]> {
   if (!res.ok) throw new Error(`Failed to fetch COG bounds: ${res.status}`)
   const data = (await res.json()) as { cogs: CogInfo[] }
   return data.cogs
-}
-
-export async function startViewshed(params: ViewshedRequest): Promise<{ task_id: string }> {
-  const res = await fetch(`${API_BASE}/viewshed/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  if (!res.ok) throw new Error(`Failed to start viewshed: ${res.status}`)
-  return (await res.json()) as { task_id: string }
 }
 
 export async function startPointSightline(params: PointSightlineRequest): Promise<{ task_id: string }> {

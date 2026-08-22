@@ -130,7 +130,7 @@ export default function Sidebar() {
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-5 overflow-y-auto border-r border-zinc-200 bg-white p-4">
-      <h1 className="text-2xl font-bold text-zinc-800">HorizonVista</h1>
+      <h1 className="text-2xl font-bold text-zinc-800">GeoHorizon</h1>
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-700">Analysis Mode</h2>

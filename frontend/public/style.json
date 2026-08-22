@@ -1,6 +1,6 @@
 {
   "version": 8,
-  "name": "HorizonVista Local",
+  "name": "GeoHorizon Local",
   "sources": {
     "basemap": {
       "type": "vector",

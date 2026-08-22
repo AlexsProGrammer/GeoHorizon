@@ -4,7 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { Protocol } from 'pmtiles'
 import type { Feature, FeatureCollection, Geometry } from 'geojson'
 import { useMapStore } from '../store/useMapStore'
-import { buildConePolygon, buildPolygonFeature } from '../services/geometry'
+import { buildArcSegment, buildConePolygon, buildPolygonFeature } from '../services/geometry'
 import Compass from './Compass'
 import HoverTooltip from './HoverTooltip'
 
@@ -182,10 +182,13 @@ export default function MapView() {
   function updateResult() {
     const map = mapRef.current
     if (!map) return
-    const src = map.getSource('gh-result') as maplibregl.GeoJSONSource | undefined
-    if (!src) return
-    const sampleCollection = extractResultFeatures(resultGeoJSON)
-    const feats = sampleCollection.features.filter((f: Feature<Geometry>) => {
+
+    const areaSource = map.getSource('gh-result') as maplibregl.GeoJSONSource | undefined
+    const pointSource = map.getSource('gh-los') as maplibregl.GeoJSONSource | undefined
+    const arcSource = map.getSource('gh-horizon-arc') as maplibregl.GeoJSONSource | undefined
+
+    const areaCollection = extractResultFeatures(resultGeoJSON)
+    const areaFeats = areaCollection.features.filter((f: Feature<Geometry>) => {
       if (f.geometry.type !== 'Point') return false
       const state = String(f.properties?.state ?? '')
       if (state) {
@@ -201,8 +204,37 @@ export default function MapView() {
       }
       return { type: 'Feature', properties: props, geometry: f.geometry } as Feature<Geometry>
     })
-    src.setData({ type: 'FeatureCollection', features: feats } as unknown as any)
-    map.setLayoutProperty('gh-result', 'visibility', feats.length ? 'visible' : 'none')
+    if (areaSource) {
+      areaSource.setData({ type: 'FeatureCollection', features: areaFeats } as unknown as any)
+      map.setLayoutProperty('gh-result', 'visibility', searchMode === 'area' && areaFeats.length ? 'visible' : 'none')
+    }
+
+    if (pointSource) {
+      const pointFeatures = (resultGeoJSON && 'samples' in resultGeoJSON && resultGeoJSON.samples ? resultGeoJSON.samples : EMPTY_FC)
+        .features.filter((f: Feature<Geometry>) => f.geometry.type === 'Point')
+        .map((f: Feature<Geometry>) => {
+          const props = {
+            ...f.properties,
+            color: pointStateColor(String(f.properties?.state ?? 'blocked')),
+          }
+          return { type: 'Feature', properties: props, geometry: f.geometry } as Feature<Geometry>
+        })
+      pointSource.setData({ type: 'FeatureCollection', features: pointFeatures } as unknown as any)
+      map.setLayoutProperty('gh-los', 'visibility', searchMode === 'point' && pointFeatures.length ? 'visible' : 'none')
+    }
+
+    if (arcSource) {
+      const horizonArcs = (resultGeoJSON && 'horizon_arcs' in resultGeoJSON && Array.isArray(resultGeoJSON.horizon_arcs) ? resultGeoJSON.horizon_arcs : [])
+      const arcFeatures = horizonArcs.map((arc: { azimuth_start?: number; azimuth_end?: number; state?: string }) => {
+        if (typeof arc.azimuth_start !== 'number' || typeof arc.azimuth_end !== 'number') return null
+        const observer = resultGeoJSON && 'observer' in resultGeoJSON && Array.isArray(resultGeoJSON.observer) ? resultGeoJSON.observer : [0, 0]
+        const feature = buildArcSegment(observer[0], observer[1], Number((resultGeoJSON && 'radius_km' in resultGeoJSON && typeof resultGeoJSON.radius_km === 'number') ? resultGeoJSON.radius_km : 10), arc.azimuth_start, arc.azimuth_end)
+        feature.properties = { state: arc.state ?? 'clear' }
+        return feature
+      }).filter(Boolean) as Feature<Geometry>[]
+      arcSource.setData({ type: 'FeatureCollection', features: arcFeatures } as unknown as any)
+      map.setLayoutProperty('gh-horizon-arc', 'visibility', searchMode === 'point' && arcFeatures.length ? 'visible' : 'none')
+    }
   }
 
   // Initialize the MapLibre map and Deck.gl overlay once.
@@ -270,6 +302,26 @@ export default function MapView() {
           paint: { 'line-color': '#f97316', 'line-width': 2 },
         })
 
+        map.addSource('gh-los', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-los', type: 'circle', source: 'gh-los',
+          paint: {
+            'circle-color': ['get', 'color'],
+            'circle-radius': 5,
+            'circle-stroke-color': 'rgba(0,0,0,0.5)',
+            'circle-stroke-width': 1,
+          },
+        })
+
+        map.addSource('gh-horizon-arc', { type: 'geojson', data: EMPTY_FC as unknown as any })
+        map.addLayer({
+          id: 'gh-horizon-arc', type: 'line', source: 'gh-horizon-arc',
+          paint: {
+            'line-color': ['case', ['==', ['get', 'state'], 'clear'], '#22c55e', ['==', ['get', 'state'], 'grazing'], '#eab308', '#ef4444'],
+            'line-width': 2,
+          },
+        })
+
         map.addSource('gh-result', { type: 'geojson', data: EMPTY_FC as unknown as any })
         map.addLayer({
           id: 'gh-result', type: 'circle', source: 'gh-result',
@@ -320,14 +372,31 @@ export default function MapView() {
       lastExpensiveRef.current = now
       const token = ++expensiveTokenRef.current
 
-      // Expensive: query the rendered OSM features for this position.
-      const features = collectHoverFeatures(
-        map.queryRenderedFeatures(e.point) as Array<{
-          layer?: { id?: string }
-          properties?: Record<string, unknown>
-        }>,
-      )
+      const rendered = map.queryRenderedFeatures(e.point) as Array<{
+        layer?: { id?: string }
+        properties?: Record<string, unknown>
+      }>
+      const features = collectHoverFeatures(rendered)
+      const losFeature = rendered.find((f) => f.layer?.id === 'gh-los' || f.layer?.id === 'gh-result')
+      const props = losFeature?.properties ?? {}
+      const state = typeof props.state === 'string' ? props.state : null
+      const distanceM = typeof props.distance_m === 'number' ? props.distance_m : typeof props.distanceM === 'number' ? props.distanceM : null
+      const azimuth = typeof props.azimuth === 'number' ? props.azimuth : null
+      const clearanceM = typeof props.clearance_m === 'number' ? props.clearance_m : typeof props.clearanceM === 'number' ? props.clearanceM : null
       hoverStateRef.current = { lng, lat, features, x, y }
+
+      setHoverPosition({
+        lng,
+        lat,
+        features,
+        elevation: elevRef.current,
+        x,
+        y,
+        state,
+        distanceM,
+        azimuth,
+        clearanceM,
+      })
 
       // Backend COG elevation sample for the current pointer position.
       fetchElevation(lng, lat).then((elev) => {

@@ -1,7 +1,33 @@
-import type { Feature, Polygon } from 'geojson'
+import type { Feature, LineString, Polygon } from 'geojson'
 
 const EARTH_RADIUS_KM = 6371
 const METERS_PER_KM = 1000
+const EARTH_RADIUS_M = 6371000
+
+function destinationPoint(
+  lng: number,
+  lat: number,
+  distanceMeters: number,
+  bearingDeg: number,
+): [number, number] {
+  const radLat = (lat * Math.PI) / 180
+  const radLng = (lng * Math.PI) / 180
+  const bearing = (bearingDeg * Math.PI) / 180
+  const angularDistance = distanceMeters / EARTH_RADIUS_M
+
+  const lat2 = Math.asin(
+    Math.sin(radLat) * Math.cos(angularDistance) +
+      Math.cos(radLat) * Math.sin(angularDistance) * Math.cos(bearing),
+  )
+  const lon2 =
+    radLng +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(radLat),
+      Math.cos(angularDistance) - Math.sin(radLat) * Math.sin(lat2),
+    )
+
+  return [(lon2 * 180) / Math.PI, (lat2 * 180) / Math.PI]
+}
 
 /**
  * Build a GeoJSON Polygon feature from an ordered list of vertices.
@@ -39,11 +65,6 @@ export function buildConePolygon(
   numPoints = 64,
 ): Feature<Polygon> {
   const radiusMeters = radiusKm * 1000
-  const metersPerDegLat = 111320
-  const metersPerDegLng = 111320 * Math.cos((lat * Math.PI) / 180)
-
-  // A 360° (panoramic) view sweeps the full circle; center the sweep on North
-  // so the polygon closes cleanly regardless of the stored azimuth.
   const isPanoramic = fov >= 360
   const sweepFrom = isPanoramic ? -180 : azimuth - fov / 2
   const sweepTo = isPanoramic ? 180 : azimuth + fov / 2
@@ -51,10 +72,8 @@ export function buildConePolygon(
   const coords: [number, number][] = [[lng, lat]]
   for (let i = 0; i <= numPoints; i++) {
     const angle = sweepFrom + ((sweepTo - sweepFrom) * i) / numPoints
-    const rad = (angle * Math.PI) / 180
-    const dx = Math.sin(rad) * radiusMeters
-    const dy = Math.cos(rad) * radiusMeters
-    coords.push([lng + dx / metersPerDegLng, lat + dy / metersPerDegLat])
+    const point = destinationPoint(lng, lat, radiusMeters, angle)
+    coords.push(point)
   }
   coords.push([lng, lat])
 
@@ -62,6 +81,33 @@ export function buildConePolygon(
     type: 'Feature',
     properties: {},
     geometry: { type: 'Polygon', coordinates: [coords] },
+  }
+}
+
+export function buildArcSegment(
+  lng: number,
+  lat: number,
+  radiusKm: number,
+  startAzimuth: number,
+  endAzimuth: number,
+  numPoints = 64,
+): Feature<LineString> {
+  const radiusMeters = radiusKm * 1000
+  const start = destinationPoint(lng, lat, radiusMeters, startAzimuth)
+  const end = destinationPoint(lng, lat, radiusMeters, endAzimuth)
+  const coords: [number, number][] = [start]
+
+  for (let i = 1; i < numPoints; i++) {
+    const t = i / numPoints
+    const angle = startAzimuth + (endAzimuth - startAzimuth) * t
+    coords.push(destinationPoint(lng, lat, radiusMeters, angle))
+  }
+  coords.push(end)
+
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: { type: 'LineString', coordinates: coords },
   }
 }
 
@@ -112,15 +158,10 @@ export function buildCirclePolygon(
   numPoints = 64,
 ): Feature<Polygon> {
   const radiusMeters = radiusKm * 1000
-  const metersPerDegLat = 111320
-  const metersPerDegLng = 111320 * Math.cos((lat * Math.PI) / 180)
-
   const coords: [number, number][] = []
   for (let i = 0; i < numPoints; i++) {
-    const angle = (2 * Math.PI * i) / numPoints
-    const dx = Math.sin(angle) * radiusMeters
-    const dy = Math.cos(angle) * radiusMeters
-    coords.push([lng + dx / metersPerDegLng, lat + dy / metersPerDegLat])
+    const angle = (360 * i) / numPoints
+    coords.push(destinationPoint(lng, lat, radiusMeters, angle))
   }
   coords.push(coords[0])
 

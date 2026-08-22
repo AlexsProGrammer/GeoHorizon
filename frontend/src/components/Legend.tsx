@@ -1,20 +1,30 @@
 import { useMapStore, type LegendColor } from '../store/useMapStore'
 
-const ROWS: { key: LegendColor; label: string; color: string }[] = [
+const POINT_ROWS: { key: LegendColor; label: string; color: string }[] = [
+  { key: 'green', label: 'Clear', color: '#22c55e' },
+  { key: 'yellow', label: 'Grazing', color: '#eab308' },
+  { key: 'red', label: 'Blocked', color: '#ef4444' },
+]
+
+const AREA_ROWS: { key: LegendColor; label: string; color: string }[] = [
   { key: 'green', label: 'Excellent (70–100%)', color: '#22c55e' },
   { key: 'yellow', label: 'Moderate (30–70%)', color: '#eab308' },
   { key: 'red', label: 'Poor (0–30%)', color: '#ef4444' },
 ]
 
 export default function Legend() {
+  const searchMode = useMapStore((s) => s.searchMode)
   const legendVisibility = useMapStore((s) => s.legendVisibility)
   const toggleLegendColor = useMapStore((s) => s.toggleLegendColor)
+  const rows = searchMode === 'point' ? POINT_ROWS : AREA_ROWS
 
   return (
     <section className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-      <h2 className="mb-2 text-sm font-semibold text-zinc-700">Legend — View Quality</h2>
+      <h2 className="mb-2 text-sm font-semibold text-zinc-700">
+        Legend — {searchMode === 'point' ? 'Line of Sight' : 'View Quality'}
+      </h2>
       <div className="flex flex-col gap-1.5">
-        {ROWS.map((row) => {
+        {rows.map((row) => {
           const enabled = legendVisibility[row.key]
           return (
             <label

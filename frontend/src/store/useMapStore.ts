@@ -37,6 +37,10 @@ export interface HoverInfo {
   features: string[]
   x: number
   y: number
+  state?: string | null
+  distanceM?: number | null
+  azimuth?: number | null
+  clearanceM?: number | null
 }
 
 interface MapState {

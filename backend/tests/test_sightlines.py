@@ -64,3 +64,25 @@ def test_observer_in_raised_cell_is_not_blinded_by_self():
 
     assert result.stats["blocked_fraction"] < 1.0
     assert result.stats["clear_fraction"] > 0.0
+
+
+def test_panoramic_coverage_spans_all_quadrants():
+    dem = np.zeros((101, 101), dtype=np.float32)
+    result = _make_result(dem, observer=(50.0, 50.0), radius_m=40.0)
+
+    az = result.samples["azimuth"]
+    assert az.size > 0
+    assert np.min(az) < 90.0
+    assert np.max(az) > 270.0
+    for bucket in (0.0, 90.0, 180.0, 270.0):
+        assert np.any((az >= bucket) & (az < bucket + 90.0))
+
+
+def test_samples_behind_wall_are_blocked_even_if_below_eye_line():
+    dem = np.zeros((101, 101), dtype=np.float32)
+    dem[:, 60:70] = 30.0
+    result = _make_result(dem, observer=(50.0, 50.0), radius_m=60.0)
+
+    behind = result.samples["state"][result.samples["distance"] > 25.0]
+    assert behind.size > 0
+    assert "blocked" in behind

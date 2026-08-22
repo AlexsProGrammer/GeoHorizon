@@ -121,29 +121,42 @@ def _azimuths_for_fov(azimuth: float, fov: float, ray_step_deg: float) -> np.nda
 
 
 def thin_samples_for_display(
+    sample_azimuths: np.ndarray,
     sample_distances: np.ndarray,
     sample_states: np.ndarray,
     sample_clearances: np.ndarray,
+    *,
     max_points: int = 50000,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    target_spacing_m: float = 4.0,
+    ray_step_deg: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Reduce the sample set for map rendering without losing the overall structure.
 
-    The map should keep roughly constant density across the radius, which means
-    farther samples are kept less often than near samples. This is a cosmetic
-    display thinning step only; the full raw sample arrays remain available for
-    statistics.
+    The display thinning must be applied to every array in the same way so that
+    azimuth/distance/state/clearance stay aligned. The angular decimation is
+    chosen so the tangential spacing remains roughly constant across the radius.
     """
     if sample_distances.size == 0:
-        return sample_distances, sample_states, sample_clearances
+        return sample_azimuths, sample_distances, sample_states, sample_clearances
     if sample_distances.size <= max_points:
-        return sample_distances, sample_states, sample_clearances
+        return sample_azimuths, sample_distances, sample_states, sample_clearances
 
+    dtheta = max(float(ray_step_deg), 0.5)
+    dtheta_rad = math.radians(dtheta)
     keep = np.ones(sample_distances.shape, dtype=bool)
-    target = max(1, int(max_points))
-    stride = max(1, int(math.ceil(sample_distances.size / target)))
-    keep[::stride] = True
-    keep[1::stride] = False
-    return sample_distances[keep], sample_states[keep], sample_clearances[keep]
+    for i, d in enumerate(sample_distances):
+        if not np.isfinite(d) or d <= 0.0:
+            keep[i] = True
+            continue
+        k = max(1, int(math.ceil(target_spacing_m / (d * dtheta_rad))))
+        keep[i] = (i % k == 0)
+
+    return (
+        sample_azimuths[keep],
+        sample_distances[keep],
+        sample_states[keep],
+        sample_clearances[keep],
+    )
 
 
 def _build_horizon_arcs(
@@ -198,10 +211,13 @@ def _build_horizon_arcs(
             else:
                 fraction = float(d[idx] / max_dist_used) if max_dist_used > 0 else 0.0
             state = "blocked" if fraction < 0.33 else "grazing"
+        azimuth_step = 360.0 / max(len(azimuths), 1)
+        if len(azimuths) > 1:
+            azimuth_step = float(np.median(np.diff(azimuths)))
         arcs.append(
             HorizonArc(
                 azimuth_start=float(az),
-                azimuth_end=float(az + (360.0 / len(azimuths))) % 360.0,
+                azimuth_end=float((az + azimuth_step) % 360.0),
                 fraction=fraction,
                 state=state,
                 clear_fraction=float(1.0 if state == "clear" else 0.0),
@@ -294,7 +310,7 @@ def cast_sightlines(
             continue
 
         effective = ray_heights - (ray_distances * ray_distances) / (2.0 * EARTH_RADIUS_M * REFRACTION_COEFFICIENT)
-        skyline_height = observer_eye
+        running_max_slope = -np.inf
 
         for j, d in enumerate(ray_distances):
             height = float(ray_heights[j])
@@ -302,18 +318,25 @@ def cast_sightlines(
             if not np.isfinite(height):
                 continue
 
-            if adjusted_height <= observer_eye:
+            if d <= 0.0:
                 state = "clear"
-                clearance = observer_eye - adjusted_height
+                clearance = 0.0
             else:
-                clearance = adjusted_height - observer_eye
-                if adjusted_height > skyline_height:
+                slope = (adjusted_height - observer_eye) / float(d)
+                if slope > running_max_slope:
+                    running_max_slope = slope
+                horizon_height = observer_eye + float(d) * running_max_slope
+                clearance = adjusted_height - horizon_height
+
+                if adjusted_height <= observer_eye:
                     state = "clear"
-                    skyline_height = adjusted_height
+                    clearance = max(0.0, observer_eye - adjusted_height)
+                elif clearance > grazing_margin_m:
+                    state = "clear"
+                elif clearance >= 0.0:
+                    state = "grazing"
                 else:
                     state = "blocked"
-                if clearance <= grazing_margin_m and state == "clear":
-                    state = "grazing"
 
             sample_azimuths.append(float(az))
             sample_distances.append(float(d))
@@ -328,13 +351,15 @@ def cast_sightlines(
         "clearance": np.asarray(sample_clearances, dtype=float),
     }
 
-    display_distances, display_states, display_clearances = thin_samples_for_display(
+    display_azimuths, display_distances, display_states, display_clearances = thin_samples_for_display(
+        samples_dict["azimuth"],
         samples_dict["distance"],
         samples_dict["state"],
         samples_dict["clearance"],
+        ray_step_deg=float(ray_step_deg),
     )
     samples = {
-        "azimuth": samples_dict["azimuth"][: display_distances.size],
+        "azimuth": display_azimuths,
         "distance": display_distances,
         "state": display_states,
         "clearance": display_clearances,

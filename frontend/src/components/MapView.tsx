@@ -146,22 +146,40 @@ export default function MapView() {
     const src = map.getSource('gh-cone') as maplibregl.GeoJSONSource | undefined
     if (!src) return
 
-    const centroid =
-      searchMode === 'area' && searchPolygon
-        ? (() => {
-            const ring = searchPolygon.geometry.coordinates[0]
-            if (!ring || ring.length < 3) return null
-            let sumLng = 0
-            let sumLat = 0
-            for (const [lng, lat] of ring) {
-              sumLng += lng
-              sumLat += lat
+    const centroid = (() => {
+      if (searchMode === 'area') {
+        const polygon = searchPolygon ?? (draftVertices.length >= 3 ? buildPolygonFeature(draftVertices) : null)
+        if (polygon) {
+          const ring = polygon.geometry.coordinates[0]
+          if (ring && ring.length >= 3) {
+            let cx = 0
+            let cy = 0
+            let signedArea = 0
+            for (let i = 0; i < ring.length; i += 1) {
+              const [x1, y1] = ring[i]
+              const [x2, y2] = ring[(i + 1) % ring.length]
+              const cross = x1 * y2 - x2 * y1
+              signedArea += cross
+              cx += (x1 + x2) * cross
+              cy += (y1 + y2) * cross
             }
-            return [sumLng / ring.length, sumLat / ring.length] as const
-          })()
-        : observerLat != null && observerLng != null
-          ? ([observerLng, observerLat] as const)
-          : null
+            const denom = 3 * signedArea
+            if (Math.abs(denom) > 0.0000001) {
+              return [cx / denom, cy / denom] as const
+            }
+          }
+        }
+      }
+      if (searchMode === 'area' && draftVertices.length >= 2) {
+        const avgLng = draftVertices.reduce((sum, [lng]) => sum + lng, 0) / draftVertices.length
+        const avgLat = draftVertices.reduce((sum, [, lat]) => sum + lat, 0) / draftVertices.length
+        return [avgLng, avgLat] as const
+      }
+      if (observerLat != null && observerLng != null) {
+        return [observerLng, observerLat] as const
+      }
+      return null
+    })()
 
     const show = centroid != null
     const coneFov = panoramicMode ? 360 : fov
@@ -472,7 +490,7 @@ export default function MapView() {
   // Live directional cone preview (native MapLibre layer), recomputed as params change.
   useEffect(() => {
     updateCone()
-  }, [searchMode, observerLat, observerLng, radiusKm, azimuth, fov, panoramicMode])
+  }, [searchMode, searchPolygon, draftVertices, observerLat, observerLng, radiusKm, azimuth, fov, panoramicMode])
 
   // The finalized search area drawn by the user (native MapLibre layer).
   useEffect(() => {

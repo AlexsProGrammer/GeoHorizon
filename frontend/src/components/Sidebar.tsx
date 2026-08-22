@@ -26,6 +26,7 @@ export default function Sidebar() {
   const radiusKm = useMapStore((s) => s.radiusKm)
   const azimuth = useMapStore((s) => s.azimuth)
   const fov = useMapStore((s) => s.fov)
+  const pointSpacingM = useMapStore((s) => s.pointSpacingM)
   const panoramicMode = useMapStore((s) => s.panoramicMode)
   const treeOffset = useMapStore((s) => s.treeOffset)
   const buildingOffset = useMapStore((s) => s.buildingOffset)
@@ -40,6 +41,7 @@ export default function Sidebar() {
   const setRadius = useMapStore((s) => s.setRadius)
   const setAzimuth = useMapStore((s) => s.setAzimuth)
   const setFov = useMapStore((s) => s.setFov)
+  const setPointSpacing = useMapStore((s) => s.setPointSpacing)
   const setPanoramicMode = useMapStore((s) => s.setPanoramicMode)
   const setTreeOffset = useMapStore((s) => s.setTreeOffset)
   const setBuildingOffset = useMapStore((s) => s.setBuildingOffset)
@@ -101,6 +103,8 @@ export default function Sidebar() {
           observer_height: observerHeight,
           tree_height: treeOffset,
           building_height: buildingOffset,
+          sample_step_m: pointSpacingM,
+          display_spacing_m: pointSpacingM,
           horizon_enabled: horizonEnabled,
         })
         task_id = res.task_id
@@ -234,6 +238,17 @@ export default function Sidebar() {
         </select>
       </section>
 
+      {searchMode === 'point' && (
+        <Slider
+          label="Point Spacing"
+          value={pointSpacingM}
+          display={`${pointSpacingM} m`}
+          min={10}
+          max={500}
+          step={10}
+          onChange={setPointSpacing}
+        />
+      )}
       <Slider
         label={searchMode === 'point' ? 'Observation Radius' : 'Preview Radius'}
         value={radiusKm}

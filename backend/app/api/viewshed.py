@@ -35,6 +35,8 @@ class ViewshedRequest(BaseModel):
     tree_height: float = 30.0
     building_height: float = 15.0
     point_density: int | None = None
+    sample_step_m: float | None = None
+    display_spacing_m: float | None = None
     grid_step_m: float = 50.0
     horizon_enabled: bool = False
     horizon_max_km: float = 100.0
@@ -51,6 +53,7 @@ class PointSightlineRequest(BaseModel):
     tree_height: float = 30.0
     building_height: float = 15.0
     sample_step_m: float | None = None
+    display_spacing_m: float | None = None
     ray_step_deg: float = 0.5
     grazing_margin_m: float = 2.0
     horizon_enabled: bool = False

@@ -238,6 +238,7 @@ def cast_sightlines(
     fov: float = 360.0,
     ray_step_deg: float = 0.5,
     sample_step_m: float = 25.0,
+    display_spacing_m: float | None = None,
     grazing_margin_m: float = 2.0,
 ) -> SightlineResult:
     """Cast a set of LOS rays from the observer across the requested FOV.
@@ -351,11 +352,13 @@ def cast_sightlines(
         "clearance": np.asarray(sample_clearances, dtype=float),
     }
 
+    display_target = float(display_spacing_m) if display_spacing_m is not None else float(sample_step_m)
     display_azimuths, display_distances, display_states, display_clearances = thin_samples_for_display(
         samples_dict["azimuth"],
         samples_dict["distance"],
         samples_dict["state"],
         samples_dict["clearance"],
+        target_spacing_m=max(4.0, display_target),
         ray_step_deg=float(ray_step_deg),
     )
     samples = {

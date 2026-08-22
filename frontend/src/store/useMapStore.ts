@@ -52,6 +52,7 @@ interface MapState {
   radiusKm: number
   azimuth: number
   fov: number
+  pointSpacingM: number
   // When true, the scoring uses a full 360° panoramic sweep (fov treated as 360);
   // when false it uses the configured directional azimuth/FOV cone.
   panoramicMode: boolean
@@ -88,6 +89,7 @@ interface MapState {
   setRadius: (km: number) => void
   setAzimuth: (deg: number) => void
   setFov: (deg: number) => void
+  setPointSpacing: (m: number) => void
   setPanoramicMode: (enabled: boolean) => void
   setTreeOffset: (m: number) => void
   setBuildingOffset: (m: number) => void
@@ -119,6 +121,7 @@ export const useMapStore = create<MapState>((set) => ({
   radiusKm: 10,
   azimuth: 270,
   fov: 40,
+  pointSpacingM: 50,
   panoramicMode: false,
   treeOffset: 30,
   buildingOffset: 15,
@@ -148,6 +151,7 @@ export const useMapStore = create<MapState>((set) => ({
   setRadius: (radiusKm) => set({ radiusKm }),
   setAzimuth: (azimuth) => set({ azimuth }),
   setFov: (fov) => set({ fov }),
+  setPointSpacing: (pointSpacingM) => set({ pointSpacingM }),
   setPanoramicMode: (panoramicMode) => set({ panoramicMode }),
   setTreeOffset: (treeOffset) => set({ treeOffset }),
   setBuildingOffset: (buildingOffset) => set({ buildingOffset }),

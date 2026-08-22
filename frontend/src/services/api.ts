@@ -22,6 +22,7 @@ export interface PointSightlineRequest {
   tree_height: number
   building_height: number
   sample_step_m?: number
+  display_spacing_m?: number
   ray_step_deg?: number
   grazing_margin_m?: number
   horizon_enabled: boolean

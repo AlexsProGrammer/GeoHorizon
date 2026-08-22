@@ -479,6 +479,8 @@ def run_point_sightlines_task(self, params: dict):
         )
 
         progress("CASTING_RAYS", 65, "Casting sightlines from observer")
+        sample_step_m = float(params.get("sample_step_m") or max(pixel_size, 10.0))
+        display_spacing_m = params.get("display_spacing_m")
         result = cast_sightlines(
             dsm,
             transform=transform,
@@ -488,7 +490,8 @@ def run_point_sightlines_task(self, params: dict):
             azimuth=float(params.get("azimuth", 0.0)),
             fov=float(params.get("fov", 360.0)),
             ray_step_deg=float(params.get("ray_step_deg", 0.5)),
-            sample_step_m=float(params.get("sample_step_m") or max(pixel_size, 10.0)),
+            sample_step_m=sample_step_m,
+            display_spacing_m=float(display_spacing_m) if display_spacing_m is not None else sample_step_m,
             grazing_margin_m=float(params.get("grazing_margin_m", 2.0)),
         )
 

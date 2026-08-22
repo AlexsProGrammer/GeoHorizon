@@ -350,8 +350,66 @@ def _stencil_windows(
     return (r_lo, r_hi, c_lo, c_hi), (r_lo - top, r_hi - top, c_lo - left, c_hi - left)
 
 
+def _weighted_visible_ratio(
+    visibility: np.ndarray,
+    valid_mask: np.ndarray,
+    distance: np.ndarray,
+) -> float:
+    """Weighted visibility with 1 / d emphasis to keep far-field area from dominating."""
+    valid_mask = np.asarray(valid_mask, dtype=bool)
+    if not np.any(valid_mask):
+        return 0.0
+    weights = np.zeros_like(distance, dtype=np.float64)
+    nz = distance > 0.0
+    weights[nz] = 1.0 / distance[nz]
+    denom = float(weights[valid_mask].sum())
+    if denom <= 0.0:
+        return 0.0
+    numerator = float(weights[valid_mask & (visibility > 0)].sum())
+    return numerator / denom
+
+
+def _weighted_score_for_mask(
+    visibility: np.ndarray,
+    mask: np.ndarray,
+    transform,
+    x: float,
+    y: float,
+    shape: tuple,
+) -> float:
+    """Apply the same weighted, 1/d-sensitive logic to full-window masks."""
+    inv = ~transform
+    obs_px, obs_py = inv * (x, y)
+    rows = np.arange(shape[0], dtype=np.float64) + 0.5
+    cols = np.arange(shape[1], dtype=np.float64) + 0.5
+    yy, xx = np.meshgrid(rows, cols, indexing="ij")
+    distance = np.hypot(xx - obs_px, yy - obs_py)
+    return _weighted_visible_ratio(visibility, mask, distance)
+
+
+def _sector_scores(
+    visibility: np.ndarray,
+    distance: np.ndarray,
+    sector_id: np.ndarray | None,
+    valid_mask: np.ndarray,
+    sector_count: int = 12,
+) -> list[float]:
+    """Per-sector visibility ratios for hover/diagnostic explanations."""
+    if sector_id is None:
+        return [0.0] * sector_count
+    sector_wise: list[float] = []
+    for idx in range(sector_count):
+        sector_mask = (sector_id == idx) & valid_mask
+        if not np.any(sector_mask):
+            sector_wise.append(0.0)
+            continue
+        sector_wise.append(_weighted_visible_ratio(visibility, sector_mask, distance))
+    return sector_wise
+
+
 def _score_point_cropped(
     dsm: np.ndarray,
+    dem: np.ndarray | None,
     transform,
     x: float,
     y: float,
@@ -359,49 +417,46 @@ def _score_point_cropped(
     radius: int,
     radius_px: float,
     sector_id: np.ndarray | None,
-    sector_totals: np.ndarray | None,
     cone_stencil: np.ndarray | None,
-    cone_total: int,
-) -> float:
-    """Score one observer using only the (2r+1)^2 window it can actually see.
-
-    Denominators are recomputed from the clipped stencil when the window runs
-    off the DSM, matching the full-window path where off-map cells were absent
-    from both the numerator and the denominator.
-    """
+    sector_count: int = 12,
+) -> tuple[float, list[float]]:
+    """Score one observer using a clipped window, bare DEM grounding, and 1/d weighting."""
     col, row = ~transform * (x, y)
     row_i, col_i = int(round(row)), int(round(col))
     windows = _stencil_windows(dsm.shape, radius, row_i, col_i)
     if windows is None:
-        return 0.0
+        return 0.0, [0.0] * sector_count
     (r_lo, r_hi, c_lo, c_hi), (sr_lo, sr_hi, sc_lo, sc_hi) = windows
 
-    sub = dsm[r_lo:r_hi, c_lo:c_hi]
+    sub = dsm[r_lo:r_hi, c_lo:c_hi].astype(np.float64, copy=True)
+    obs_row = row_i - r_lo
+    obs_col = col_i - c_lo
+    if dem is not None and 0 <= obs_row < sub.shape[0] and 0 <= obs_col < sub.shape[1]:
+        sub[obs_row, obs_col] = float(dem[row_i, col_i])
+
     vis = reference_viewshed(
-        sub, (row_i - r_lo, col_i - c_lo), observer_height, max_radius_px=radius_px
+        sub, (obs_row, obs_col), observer_height, max_radius_px=radius_px
     )
+    row_idx, col_idx = np.indices(sub.shape)
+    distance = np.hypot(row_idx - obs_row, col_idx - obs_col)
+    valid_mask = (distance <= radius_px) & np.isfinite(sub)
 
-    if sector_id is not None and sector_totals is not None:
-        sectors = sector_id[sr_lo:sr_hi, sc_lo:sc_hi]
-        inside = sectors >= 0
-        totals = (
-            sector_totals
-            if sectors.shape == sector_id.shape
-            else np.bincount(sectors[inside], minlength=sector_totals.size).astype(np.float64)
-        )
-        counts = np.bincount(
-            sectors[inside & (vis > 0)], minlength=sector_totals.size
-        ).astype(np.float64)
-        ratios = np.divide(counts, totals, out=np.zeros_like(totals), where=totals > 0)
-        return float(ratios.mean())
+    if cone_stencil is not None:
+        local_cone = cone_stencil[sr_lo:sr_hi, sc_lo:sc_hi]
+        if local_cone.shape != sub.shape:
+            local_cone = local_cone[: sub.shape[0], : sub.shape[1]]
+        valid_mask &= local_cone
 
-    if cone_stencil is None:
-        return 0.0
-    cone = cone_stencil[sr_lo:sr_hi, sc_lo:sc_hi]
-    total = cone_total if cone.shape == cone_stencil.shape else int(np.count_nonzero(cone))
-    if total == 0:
-        return 0.0
-    return float(np.count_nonzero((vis > 0) & cone)) / total
+    if sector_id is not None:
+        local_sector_id = sector_id[sr_lo:sr_hi, sc_lo:sc_hi]
+        if local_sector_id.shape != sub.shape:
+            local_sector_id = local_sector_id[: sub.shape[0], : sub.shape[1]]
+        sectors = _sector_scores(vis, distance, local_sector_id, valid_mask, sector_count)
+    else:
+        sectors = [0.0] * sector_count
+
+    score = _weighted_visible_ratio(vis, valid_mask, distance)
+    return score, sectors
 
 
 def process_points_batch(
@@ -456,60 +511,94 @@ def process_points_batch(
     )
 
     radius = max(0, int(np.ceil(radius_px)))
-    sector_id = sector_totals = cone_stencil = None
-    cone_total = 0
+    sector_id = cone_stencil = None
     geometry = None
+    sector_count = max(1, int(panoramic_directions)) if panoramic else 12
     if engine == "numpy":
         if panoramic:
-            sector_id, sector_totals = build_sector_stencil(radius_px, panoramic_directions)
+            sector_id, _ = build_sector_stencil(radius_px, panoramic_directions)
         else:
-            cone_stencil, cone_total = build_cone_stencil(radius_px, azimuth, mask_fov)
+            cone_stencil, _ = build_cone_stencil(radius_px, azimuth, mask_fov)
+            sector_id, _ = build_sector_stencil(radius_px, 12)
     else:
         geometry = precompute_cone_geometry(dsm.shape, transform)
 
     for i, (x, y) in enumerate(points):
         if engine == "numpy":
-            score = _score_point_cropped(
+            score, sectors = _score_point_cropped(
                 dsm,
-                transform,
-                x,
-                y,
-                observer_height,
-                radius,
-                radius_px,
-                sector_id,
-                sector_totals,
-                cone_stencil,
-                cone_total,
+                dem=elevation_source,
+                transform=transform,
+                x=x,
+                y=y,
+                observer_height=observer_height,
+                radius=radius,
+                radius_px=radius_px,
+                sector_id=sector_id,
+                cone_stencil=cone_stencil,
+                sector_count=sector_count,
             )
         else:
             visibility = calculate_viewshed(
                 dsm, transform, crs, (x, y), observer_height, dsm_path=dsm_path
             )
             if panoramic:
-                score = score_viewshed_panoramic(
-                    visibility,
-                    transform,
-                    dsm.shape,
-                    x,
-                    y,
-                    radius_px,
-                    directions=panoramic_directions,
-                    geometry=geometry,
-                )
+                sectors = []
+                total = 0.0
+                for k in range(panoramic_directions):
+                    az = k * (360.0 / panoramic_directions)
+                    cone = create_directional_mask(
+                        dsm.shape, transform, x, y, az, 360.0 / panoramic_directions, radius_px, geometry=geometry
+                    )
+                    score_value = _weighted_score_for_mask(visibility, cone, transform, x, y, dsm.shape)
+                    sectors.append(score_value)
+                    total += score_value
+                base = total / len(sectors) if sectors else 0.0
             else:
                 cone = create_directional_mask(
                     dsm.shape, transform, x, y, azimuth, mask_fov, radius_px, geometry=geometry
                 )
-                score = score_viewshed(visibility, cone)
+                base = _weighted_score_for_mask(visibility, cone, transform, x, y, dsm.shape)
+                sectors = []
+                for k in range(12):
+                    sector_az = k * 30.0 + 15.0
+                    sector_fov = 30.0
+                    sector_mask = create_directional_mask(
+                        dsm.shape, transform, x, y, sector_az, sector_fov, radius_px, geometry=geometry
+                    )
+                    sectors.append(_weighted_score_for_mask(visibility, sector_mask & cone, transform, x, y, dsm.shape))
+            score = base
 
-        properties: dict = {"score": 0.0}
+        properties: dict = {
+            "score": 0.0,
+            "visibility_score": 0.0,
+            "horizon_score": 1.0,
+            "sectors": [0.0] * sector_count,
+            "best_azimuth": 0.0,
+            "worst_azimuth": 0.0,
+        }
+        if engine == "numpy":
+            properties["sectors"] = [round(v, 4) for v in sectors]
+            if sectors:
+                best_idx = int(np.argmax(sectors))
+                worst_idx = int(np.argmin(sectors))
+                properties["best_azimuth"] = round((best_idx + 0.5) * (360.0 / max(len(sectors), 1)), 2)
+                properties["worst_azimuth"] = round((worst_idx + 0.5) * (360.0 / max(len(sectors), 1)), 2)
+            properties["visibility_score"] = round(score, 4)
+        else:
+            properties["sectors"] = [round(v, 4) for v in sectors]
+            if sectors:
+                best_idx = int(np.argmax(sectors))
+                worst_idx = int(np.argmin(sectors))
+                properties["best_azimuth"] = round((best_idx + 0.5) * (360.0 / max(len(sectors), 1)), 2)
+                properties["worst_azimuth"] = round((worst_idx + 0.5) * (360.0 / max(len(sectors), 1)), 2)
+            properties["visibility_score"] = round(score, 4)
+
         if horizon_profiles is not None:
             eye_altitude = _dem_elevation(elevation_source, transform, x, y) + observer_height
             multiplier = _horizon_multiplier(horizon, horizon_profiles, x, y, eye_altitude)
-            score *= multiplier
-            # Surfaced so the horizon pass threshold can be tuned from real runs.
-            properties["horizon"] = round(multiplier, 4)
+            properties["horizon_score"] = round(multiplier, 4)
+            score = 0.75 * score + 0.25 * multiplier
 
         properties["score"] = round(score, 4)
         lng, lat = to_wgs84.transform(x, y)
